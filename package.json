@@ -14,6 +14,7 @@
     "@dnd-kit/sortable": "^10.0.0",
     "@tailwindcss/vite": "^4.3.0",
     "framer-motion": "^12.38.0",
+    "jiti": "^2.7.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-icons": "^5.6.0",
