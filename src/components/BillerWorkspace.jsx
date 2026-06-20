@@ -3,7 +3,6 @@ import {
   FiArrowDownLeft,
   FiArrowUpRight,
   FiCheckCircle,
-  FiChevronDown,
   FiClock,
   FiCreditCard,
   FiFileText,
@@ -14,7 +13,6 @@ import {
   FiPrinter,
   FiSave,
   FiSearch,
-  FiUser,
 } from "react-icons/fi";
 import { api } from "../api";
 import Calculator from "./Calculator";
@@ -23,7 +21,7 @@ const kgPerUnit = { kg: 1, quintal: 100, tonne: 1000 };
 const inr = new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", minimumFractionDigits: 2 });
 const number = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
 
-const blankParty = { id: "", name: "", phone: "", address: "" };
+const blankParty = { id: "", name: "", phone: "", address: "", bankAccount: "", bankIfsc: "" };
 
 export default function BillerWorkspace({ user, initialData, onData, onLogout }) {
   const [data, setData] = useState(initialData);
@@ -47,10 +45,11 @@ export default function BillerWorkspace({ user, initialData, onData, onLogout })
   const branch = data.branches.find((item) => item.id === user.branchId) || data.branches[0];
   const matches = useMemo(() => {
     const search = partyQuery.trim().toLowerCase();
-    if (!search) return data.parties.slice(0, 5);
+    if (!search || party.id) return [];
     const digits = search.replace(/\D/g, "");
     return data.parties.filter((item) => item.name.toLowerCase().includes(search) || (digits && item.phone.replace(/\D/g, "").includes(digits))).slice(0, 6);
-  }, [data.parties, partyQuery]);
+  }, [data.parties, party.id, partyQuery]);
+  const isNewParty = Boolean(partyQuery.trim() && !party.id && matches.length === 0);
   const totalKg = Number(quantity || 0) * kgPerUnit[unit];
   const gross = totalKg * Number(rate || 0);
   const deduction = type === "purchase" && applyCd && gross > 20000 ? gross * 0.025 : 0;
@@ -65,7 +64,7 @@ export default function BillerWorkspace({ user, initialData, onData, onLogout })
   };
 
   const chooseParty = (selected) => {
-    setParty({ id: selected.id, name: selected.name, phone: selected.phone, address: selected.address });
+    setParty({ id: selected.id, name: selected.name, phone: selected.phone, address: selected.address, bankAccount: selected.bankAccount || "", bankIfsc: selected.bankIfsc || "" });
     setPartyQuery(selected.name);
     setPartyOpen(false);
   };
@@ -73,7 +72,7 @@ export default function BillerWorkspace({ user, initialData, onData, onLogout })
   const changePartyName = (value) => {
     setPartyQuery(value);
     setParty((current) => ({ ...current, id: "", name: value }));
-    setPartyOpen(true);
+    setPartyOpen(Boolean(value.trim()));
   };
 
   const resetBill = () => {
@@ -125,7 +124,8 @@ export default function BillerWorkspace({ user, initialData, onData, onLogout })
           <div className="biller-brand"><span>JM</span><div><strong>Jai Mata Di Gud Mill</strong><small>Billing desk</small></div></div>
           <div className="biller-office"><FiMapPin /><span><small>Billing office</small><strong>{branch?.name}</strong></span></div>
           <div className="biller-clock"><FiClock /><span>{new Intl.DateTimeFormat("en-IN", { dateStyle: "medium" }).format(new Date())}</span></div>
-          <div className="biller-profile"><div>{initials(user.displayName)}</div><span><strong>{user.displayName}</strong><small>Biller · {branch?.name}</small></span><FiChevronDown /><button onClick={onLogout}><FiLogOut /> Sign out</button></div>
+          <div className="biller-profile"><div>{initials(user.displayName)}</div><span><strong>{user.displayName}</strong><small>Biller · {branch?.name}</small></span></div>
+          <button className="biller-signout" onClick={onLogout}><FiLogOut /> Sign out</button>
         </header>
 
         <div className="biller-body">
@@ -143,15 +143,17 @@ export default function BillerWorkspace({ user, initialData, onData, onLogout })
             <section className="bill-form-card party-section">
               <header><span>01</span><div><h2>Party details</h2><p>Search an existing party or type new details to save automatically.</p></div></header>
               <div className="party-search-field">
-                <label><span>Party name *</span><div><FiSearch /><input value={partyQuery} onChange={(event) => changePartyName(event.target.value)} onFocus={() => setPartyOpen(true)} placeholder="Start typing a name or phone number..." autoComplete="off" />{party.id && <em><FiCheckCircle /> Existing party</em>}</div></label>
-                {partyOpen && partyQuery && <div className="party-suggestions">{matches.length ? matches.map((item) => <button key={item.id} onClick={() => chooseParty(item)}><span>{initials(item.name)}</span><div><strong>{item.name}</strong><small>{item.phone} · {item.address}</small></div><em>{item.id}</em></button>) : <div className="new-party-hint"><FiUser /><span><strong>New party</strong><small>Continue entering the contact number and address below. It will be saved with this bill.</small></span></div>}</div>}
+                <label><span>Party name *</span><div><FiSearch /><input value={partyQuery} onChange={(event) => changePartyName(event.target.value)} onFocus={() => setPartyOpen(Boolean(partyQuery.trim()))} onBlur={() => window.setTimeout(() => setPartyOpen(false), 120)} placeholder="Start typing a name or phone number..." autoComplete="off" />{party.id && <em><FiCheckCircle /> Existing party</em>}</div></label>
+                {partyOpen && matches.length > 0 && <div className="party-suggestions">{matches.map((item) => <button key={item.id} onMouseDown={(event) => { event.preventDefault(); chooseParty(item); }}><span>{initials(item.name)}</span><div><strong>{item.name}</strong><small>{item.phone} · {item.address}</small></div><em>{item.id}</em></button>)}</div>}
+                {isNewParty && <p className="party-inline-note">New party. Enter contact, address and bank details if available; it will be saved with this bill.</p>}
               </div>
               <div className="biller-fields two"><label><span>Contact number *</span><div className="input-icon"><FiPhone /><input value={party.phone} onChange={(event) => setParty((current) => ({ ...current, phone: event.target.value }))} placeholder="10-digit mobile number" inputMode="tel" /></div></label><label><span>Full address *</span><div className="input-icon"><FiMapPin /><input value={party.address} onChange={(event) => setParty((current) => ({ ...current, address: event.target.value }))} placeholder="Village, city, district" /></div></label></div>
+              <div className="biller-fields two party-bank-fields"><label><span>Bank account number</span><div className="input-icon"><FiCreditCard /><input value={party.bankAccount} onChange={(event) => setParty((current) => ({ ...current, bankAccount: event.target.value }))} placeholder="Optional account number" inputMode="numeric" /></div></label><label><span>IFSC code</span><div className="input-icon"><FiFileText /><input value={party.bankIfsc} onChange={(event) => setParty((current) => ({ ...current, bankIfsc: event.target.value.toUpperCase() }))} placeholder="Optional IFSC" /></div></label></div>
             </section>
 
             <section className="bill-form-card grain-section">
               <header><span>02</span><div><h2>Grain & weight</h2><p>Select the grain first; current stock appears separately.</p></div></header>
-              <div className="grain-row"><label className="product-field"><span>Grain / item *</span><select value={productId} onChange={(event) => chooseProduct(event.target.value)}>{data.products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label><div className="selected-stock"><span><FiPackage /></span><div><small>Available stock</small><strong>{number.format(product?.stockKg)} kg</strong></div></div><label><span>Quantity *</span><input value={quantity} onChange={(event) => setQuantity(event.target.value)} type="number" min="0" step="0.01" placeholder="0.00" /></label><label><span>Unit *</span><select value={unit} onChange={(event) => setUnit(event.target.value)}><option value="kg">Kilogram</option><option value="quintal">Quintal</option><option value="tonne">Tonne</option></select></label></div>
+              <div className="grain-row"><label className="product-field"><span>Grain / item *</span><select value={productId} onChange={(event) => chooseProduct(event.target.value)}>{data.products.map((item) => <option value={item.id} key={item.id}>{productLabel(item)}</option>)}</select></label><div className="selected-stock"><span><FiPackage /></span><div><small>Available stock</small><strong>{number.format(product?.stockKg)} kg</strong></div></div><label><span>Quantity *</span><input value={quantity} onChange={(event) => setQuantity(event.target.value)} type="number" min="0" step="0.01" placeholder="0.00" /></label><label><span>Unit *</span><select value={unit} onChange={(event) => setUnit(event.target.value)}><option value="kg">Kilogram</option><option value="quintal">Quintal</option><option value="tonne">Tonne</option></select></label></div>
               <div className="weight-conversion"><span>{quantity || "0"} {unit}</span><strong>=</strong><span>{number.format(totalKg)} kilograms</span></div>
             </section>
 
@@ -163,7 +165,7 @@ export default function BillerWorkspace({ user, initialData, onData, onLogout })
           </section>
 
           <aside className="billing-sidebar">
-            <section className="live-summary"><header><FiFileText /><div><span>Live total</span><h2>Bill summary</h2></div></header><div className="summary-product"><span>{product?.short}</span><div><strong>{product?.name}</strong><small>{number.format(totalKg)} kg × {inr.format(Number(rate || 0))}</small></div></div><dl><div><dt>Gross amount</dt><dd>{inr.format(gross)}</dd></div>{type === "purchase" && <div className="summary-deduction"><dt>CD deduction</dt><dd>- {inr.format(deduction)}</dd></div>}<div className="summary-net"><dt>Net {type === "purchase" ? "payable" : "receivable"}</dt><dd>{inr.format(net)}</dd></div><div><dt>Paid now</dt><dd>{inr.format(Number(paidAmount || 0))}</dd></div><div className="summary-due"><dt>Balance due</dt><dd>{inr.format(due)}</dd></div></dl><div className="summary-actions"><button className="print-save" onClick={() => save(true)} disabled={saving}><FiPrinter /> Save & print</button><button className="main-save" onClick={() => save(false)} disabled={saving}><FiSave /> {saving ? "Saving..." : "Save bill"}</button></div></section>
+            <section className="live-summary"><header><FiFileText /><div><span>Live total</span><h2>Bill summary</h2></div></header><div className="summary-product"><span>{product?.short}</span><div><strong>{product?.name}</strong>{product?.hindiName && <small>{product.hindiName}</small>}<small>{number.format(totalKg)} kg × {inr.format(Number(rate || 0))}</small></div></div><dl><div><dt>Gross amount</dt><dd>{inr.format(gross)}</dd></div>{type === "purchase" && <div className="summary-deduction"><dt>CD deduction</dt><dd>- {inr.format(deduction)}</dd></div>}<div className="summary-net"><dt>Net {type === "purchase" ? "payable" : "receivable"}</dt><dd>{inr.format(net)}</dd></div><div><dt>Paid now</dt><dd>{inr.format(Number(paidAmount || 0))}</dd></div><div className="summary-due"><dt>Balance due</dt><dd>{inr.format(due)}</dd></div></dl><div className="summary-actions"><button className="print-save" onClick={() => save(true)} disabled={saving}><FiPrinter /> Save & print</button><button className="main-save" onClick={() => save(false)} disabled={saving}><FiSave /> {saving ? "Saving..." : "Save bill"}</button></div></section>
             <Calculator />
             <div className="biller-tip"><FiCreditCard /><span><strong>Payment reminder</strong><small>Any unpaid amount is added to the party ledger automatically.</small></span></div>
           </aside>
@@ -176,11 +178,81 @@ export default function BillerWorkspace({ user, initialData, onData, onLogout })
 
 function BillerInvoice({ invoice }) {
   if (!invoice) return null;
-  return <section className="print-invoice biller-print"><div className="invoice-frame"><header className="invoice-company"><div className="invoice-logo">JM</div><div><span className="invoice-kicker">Grain trading & processing</span><h1>Jai Mata Di Gud Mill</h1><p>Office: {invoice.branch} · Contact: +91 99552 99279</p></div><aside><span>{invoice.type === "sale" ? "SALE INVOICE" : "PURCHASE VOUCHER"}</span><strong>{invoice.id}</strong><small>{formatDate(invoice.date)}</small></aside></header><section className="invoice-owner"><span>Owner</span><strong>Pankaj Kumar Das</strong><i>All weights billed in kilograms</i></section><section className="invoice-party"><div><span>Bill to / Party</span><strong>{invoice.party}</strong></div><div><span>Billing office</span><strong>{invoice.branch}</strong></div><div><span>Payment mode</span><strong>{invoice.paymentMethod}</strong></div></section><table><thead><tr><th>#</th><th>Grain description</th><th>Entered weight</th><th>Total kg</th><th>Rate / kg</th><th>Amount</th></tr></thead><tbody><tr><td>1</td><td><strong>{invoice.product}</strong></td><td>{invoice.quantity} {invoice.unit}</td><td>{number.format(invoice.totalKg)} kg</td><td>{inr.format(invoice.rate)}</td><td>{inr.format(invoice.gross)}</td></tr></tbody></table><section className="invoice-bottom"><div className="invoice-words"><span>Amount in words</span><strong>{amountInWords(Math.round(invoice.netAmount))} rupees only</strong><p>Thank you for doing business with us.</p></div><div className="invoice-totals-new"><p><span>Gross amount</span><strong>{inr.format(invoice.gross)}</strong></p>{invoice.cdDeduction > 0 && <p><span>CD deduction (2.5%)</span><strong>- {inr.format(invoice.cdDeduction)}</strong></p>}<p className="grand"><span>Net amount</span><strong>{inr.format(invoice.netAmount)}</strong></p><p><span>Paid</span><strong>{inr.format(invoice.paidAmount)}</strong></p><p><span>Balance due</span><strong>{inr.format(invoice.dueAmount)}</strong></p></div></section><footer><div><span>Party signature</span></div><p>This is a computer-generated bill. Please verify weight and amount before leaving the office.</p><div><strong>For Jai Mata Di Gud Mill</strong><span>Authorised signatory</span></div></footer></div></section>;
+  return (
+    <section className="print-invoice biller-print">
+      <div className="invoice-frame">
+        <header className="invoice-company">
+          <div className="invoice-logo">JM</div>
+          <div>
+            <span className="invoice-kicker">Grain trading & processing</span>
+            <h1>Jai Mata Di Gud Mill</h1>
+            <p>Owner: Pankaj Kumar Das · Contact: +91 99552 99279</p>
+          </div>
+          <aside>
+            <span>{invoice.type === "sale" ? "SALE INVOICE" : "PURCHASE VOUCHER"}</span>
+            <strong>{invoice.id}</strong>
+            <small>{formatDate(invoice.date)}</small>
+          </aside>
+        </header>
+
+        <section className="invoice-owner">
+          <span>Billing office</span>
+          <strong>{invoice.branch}</strong>
+          <i>All weights billed in kilograms</i>
+        </section>
+
+        <section className="invoice-party invoice-party-grid">
+          <div className="wide"><span>Party name</span><strong>{invoice.party}</strong></div>
+          <div><span>Contact no.</span><strong>{invoice.partyPhone || "Not added"}</strong></div>
+          <div><span>Payment mode</span><strong>{invoice.paymentMethod}</strong></div>
+          <div className="wide"><span>Address</span><strong>{invoice.partyAddress || "Not added"}</strong></div>
+          <div><span>Bank account</span><strong>{invoice.partyBankAccount || "Not added"}</strong></div>
+          <div><span>IFSC</span><strong>{invoice.partyBankIfsc || "Not added"}</strong></div>
+        </section>
+
+        <table>
+          <thead><tr><th>#</th><th>Grain description</th><th>Entered weight</th><th>Total kg</th><th>Rate / kg</th><th>Amount</th></tr></thead>
+          <tbody>
+            <tr>
+              <td>1</td>
+              <td><strong>{invoiceProductLabel(invoice)}</strong></td>
+              <td>{invoice.quantity} {invoice.unit}</td>
+              <td>{number.format(invoice.totalKg)} kg</td>
+              <td>{inr.format(invoice.rate)}</td>
+              <td>{inr.format(invoice.gross)}</td>
+            </tr>
+          </tbody>
+        </table>
+
+        <section className="invoice-bottom">
+          <div className="invoice-words">
+            <span>Amount in words</span>
+            <strong>{amountInWords(Math.round(invoice.netAmount))} rupees only</strong>
+            <p>Please verify party details, weight and amount before leaving the office.</p>
+          </div>
+          <div className="invoice-totals-new">
+            <p><span>Gross amount</span><strong>{inr.format(invoice.gross)}</strong></p>
+            {invoice.cdDeduction > 0 && <p><span>CD deduction (2.5%)</span><strong>- {inr.format(invoice.cdDeduction)}</strong></p>}
+            <p className="grand"><span>Net amount</span><strong>{inr.format(invoice.netAmount)}</strong></p>
+            <p><span>Paid</span><strong>{inr.format(invoice.paidAmount)}</strong></p>
+            <p><span>Balance due</span><strong>{inr.format(invoice.dueAmount)}</strong></p>
+          </div>
+        </section>
+
+        <footer>
+          <div><span>Party signature</span></div>
+          <p>This is a computer-generated bill from Jai Mata Di Gud Mill.</p>
+          <div><strong>For Jai Mata Di Gud Mill</strong><span>Authorised signatory</span></div>
+        </footer>
+      </div>
+    </section>
+  );
 }
 
 function initials(name) { return name.split(" ").filter(Boolean).slice(0, 2).map((item) => item[0]).join("").toUpperCase(); }
 function formatDate(value) { return new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "long", year: "numeric" }).format(new Date(value)); }
+function productLabel(product) { return product?.hindiName ? `${product.name} · ${product.hindiName}` : product?.name || ""; }
+function invoiceProductLabel(invoice) { return invoice.productHindi ? `${invoice.product} · ${invoice.productHindi}` : invoice.product; }
 
 function amountInWords(value) {
   if (!value) return "Zero";

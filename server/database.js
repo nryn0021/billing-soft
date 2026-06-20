@@ -1,5 +1,6 @@
 import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { INITIAL_DATA } from "../src/data/seed.js";
@@ -10,8 +11,41 @@ const dataDirectory = process.env.JMD_DATA_DIR ? path.resolve(process.env.JMD_DA
 mkdirSync(dataDirectory, { recursive: true });
 
 export const databasePath = path.join(dataDirectory, "jmd-mill.sqlite");
+const secretPath = path.join(dataDirectory, ".jmd-secret");
 export const db = new DatabaseSync(databasePath);
 db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;");
+
+function readDataSecret() {
+  if (process.env.JMD_DATA_SECRET) return process.env.JMD_DATA_SECRET;
+  if (!existsSync(secretPath)) writeFileSync(secretPath, randomBytes(32).toString("base64url"), { mode: 0o600 });
+  return readFileSync(secretPath, "utf8").trim();
+}
+
+const dataKey = createHash("sha256").update(readDataSecret()).digest();
+
+function encryptSensitive(value) {
+  const text = String(value || "").trim();
+  if (!text) return null;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
+  const encrypted = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
+}
+
+function decryptSensitive(value) {
+  const text = String(value || "");
+  if (!text) return "";
+  if (!text.startsWith("v1:")) return text;
+  try {
+    const [, ivText, tagText, encryptedText] = text.split(":");
+    const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(ivText, "base64url"));
+    decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+    return Buffer.concat([decipher.update(Buffer.from(encryptedText, "base64url")), decipher.final()]).toString("utf8");
+  } catch {
+    return "";
+  }
+}
 
 const schema = `
 CREATE TABLE IF NOT EXISTS branches (
@@ -47,6 +81,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 CREATE TABLE IF NOT EXISTS products (
   id TEXT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
+  hindi_name TEXT,
   short_code TEXT NOT NULL,
   category TEXT NOT NULL,
   base_rate_paise INTEGER NOT NULL CHECK (base_rate_paise >= 0),
@@ -136,6 +171,15 @@ CREATE INDEX IF NOT EXISTS idx_stock_product_branch ON stock_movements(product_i
 
 db.exec(schema);
 
+function ensureColumn(table, column, definition) {
+  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((item) => item.name === column);
+  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+ensureColumn("products", "hindi_name", "TEXT");
+ensureColumn("parties", "bank_account_encrypted", "TEXT");
+ensureColumn("parties", "bank_ifsc", "TEXT");
+
 function seedDatabase() {
   const branchCount = db.prepare("SELECT COUNT(*) AS count FROM branches").get().count;
   if (branchCount === 0) {
@@ -161,17 +205,19 @@ function seedDatabase() {
 
   const productCount = db.prepare("SELECT COUNT(*) AS count FROM products").get().count;
   if (productCount === 0) {
-    const insertProduct = db.prepare("INSERT INTO products (id, name, short_code, category, base_rate_paise, stock_grams) VALUES (?, ?, ?, ?, ?, ?)");
+    const insertProduct = db.prepare("INSERT INTO products (id, name, hindi_name, short_code, category, base_rate_paise, stock_grams) VALUES (?, ?, ?, ?, ?, ?, ?)");
     for (const item of INITIAL_DATA.products) {
-      insertProduct.run(item.id, item.name, item.short, item.category, Math.round(item.baseRate * 100), Math.round(item.stockKg * 1000));
+      insertProduct.run(item.id, item.name, item.hindiName, item.short, item.category, Math.round(item.baseRate * 100), Math.round(item.stockKg * 1000));
     }
   }
+  const updateHindi = db.prepare("UPDATE products SET hindi_name = ? WHERE id = ? AND (hindi_name IS NULL OR hindi_name = '')");
+  for (const item of INITIAL_DATA.products) updateHindi.run(item.hindiName, item.id);
 
   const partyCount = db.prepare("SELECT COUNT(*) AS count FROM parties").get().count;
   if (partyCount === 0) {
-    const insertParty = db.prepare("INSERT INTO parties (id, name, phone_normalized, phone_display, address, kind, balance_paise, balance_type) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    const insertParty = db.prepare("INSERT INTO parties (id, name, phone_normalized, phone_display, address, kind, balance_paise, balance_type, bank_account_encrypted, bank_ifsc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     for (const item of INITIAL_DATA.parties) {
-      insertParty.run(item.id, item.name, normalizePhone(item.phone), item.phone, item.address, item.kind, Math.round(item.balance * 100), item.balanceType);
+      insertParty.run(item.id, item.name, normalizePhone(item.phone), item.phone, item.address, item.kind, Math.round(item.balance * 100), item.balanceType, encryptSensitive(item.bank?.account), item.bank?.ifsc || null);
     }
   }
 
@@ -259,17 +305,29 @@ export function changePassword(userId, password) {
 }
 
 function mapProduct(row) {
-  return { id: row.id, name: row.name, short: row.short_code, category: row.category, baseRate: row.base_rate_paise / 100, stockKg: row.stock_grams / 1000 };
+  return { id: row.id, name: row.name, hindiName: row.hindi_name || "", short: row.short_code, category: row.category, baseRate: row.base_rate_paise / 100, stockKg: row.stock_grams / 1000 };
 }
 
 function mapParty(row) {
-  return { id: row.id, name: row.name, phone: row.phone_display, address: row.address, kind: row.kind, balance: row.balance_paise / 100, balanceType: row.balance_type };
+  return {
+    id: row.id,
+    name: row.name,
+    phone: row.phone_display,
+    address: row.address,
+    bankAccount: decryptSensitive(row.bank_account_encrypted),
+    bankIfsc: row.bank_ifsc || "",
+    kind: row.kind,
+    balance: row.balance_paise / 100,
+    balanceType: row.balance_type,
+  };
 }
 
 function transactionRows(user) {
   const where = user.role === "biller" ? "WHERE b.branch_id = ?" : "";
   const params = user.role === "biller" ? [user.branchId] : [];
-  return db.prepare(`SELECT b.*, p.name AS party_name, p.id AS party_code, pr.name AS product_name, pr.id AS product_code,
+  return db.prepare(`SELECT b.*, p.name AS party_name, p.id AS party_code, p.phone_display AS party_phone,
+    p.address AS party_address, p.bank_account_encrypted AS party_bank_account, p.bank_ifsc AS party_bank_ifsc,
+    pr.name AS product_name, pr.hindi_name AS product_hindi_name, pr.id AS product_code,
     bl.entered_quantity, bl.entered_unit, bl.weight_grams, bl.rate_paise_per_kg, bl.base_rate_paise_per_kg,
     br.name AS branch_name, COALESCE(u.display_name, 'Imported record') AS creator_name
     FROM bills b JOIN parties p ON p.id = b.party_id JOIN bill_lines bl ON bl.bill_id = b.id
@@ -280,7 +338,9 @@ function transactionRows(user) {
 function mapTransaction(row) {
   return {
     id: row.id, type: row.bill_type, date: row.created_at, partyId: row.party_code, party: row.party_name,
-    productId: row.product_code, product: row.product_name, quantity: row.entered_quantity, unit: row.entered_unit,
+    partyPhone: row.party_phone, partyAddress: row.party_address, partyBankAccount: decryptSensitive(row.party_bank_account),
+    partyBankIfsc: row.party_bank_ifsc || "", productId: row.product_code, product: row.product_name, productHindi: row.product_hindi_name || "",
+    quantity: row.entered_quantity, unit: row.entered_unit,
     totalKg: row.weight_grams / 1000, rate: row.rate_paise_per_kg / 100, baseRate: row.base_rate_paise_per_kg / 100,
     gross: row.gross_paise / 100, cdDeduction: row.deduction_paise / 100, netAmount: row.net_paise / 100,
     paidAmount: row.paid_paise / 100, dueAmount: row.due_paise / 100, paymentMethod: row.payment_method,
@@ -309,6 +369,24 @@ export function getBootstrap(user) {
 function requireText(value, label, max = 160) {
   const text = String(value || "").trim();
   if (!text || text.length > max) throw new Error(`${label} is required and must be under ${max} characters.`);
+  return text;
+}
+
+function optionalText(value, label, max = 160) {
+  const text = String(value || "").trim();
+  if (text.length > max) throw new Error(`${label} must be under ${max} characters.`);
+  return text;
+}
+
+function cleanBankAccount(value) {
+  const text = optionalText(value, "Bank account number", 34).replace(/\s+/g, "");
+  if (text && !/^[A-Za-z0-9]{6,34}$/.test(text)) throw new Error("Bank account number may contain 6-34 letters or digits.");
+  return text;
+}
+
+function cleanIfsc(value) {
+  const text = optionalText(value, "IFSC", 11).toUpperCase();
+  if (text && !/^[A-Z]{4}0[A-Z0-9]{6}$/.test(text)) throw new Error("Enter a valid IFSC code.");
   return text;
 }
 
@@ -352,6 +430,10 @@ export function createBill(user, payload) {
   const phoneNormalized = normalizePhone(phoneDisplay);
   if (phoneNormalized.length !== 10) throw new Error("Enter a valid 10-digit contact number.");
   const address = requireText(partyInput.address, "Address", 240);
+  const bankAccount = cleanBankAccount(partyInput.bankAccount);
+  const bankIfsc = cleanIfsc(partyInput.bankIfsc);
+  if ((bankAccount && !bankIfsc) || (!bankAccount && bankIfsc)) throw new Error("Enter both bank account number and IFSC, or leave both blank.");
+  const encryptedBankAccount = encryptSensitive(bankAccount);
 
   db.exec("BEGIN IMMEDIATE");
   try {
@@ -359,11 +441,11 @@ export function createBill(user, payload) {
     if (!party) party = db.prepare("SELECT * FROM parties WHERE phone_normalized = ?").get(phoneNormalized);
     if (!party) {
       const partyId = nextPartyId();
-      db.prepare("INSERT INTO parties (id, name, phone_normalized, phone_display, address, kind) VALUES (?, ?, ?, ?, ?, ?)").run(partyId, partyName, phoneNormalized, phoneDisplay, address, type === "sale" ? "customer" : "supplier");
+      db.prepare("INSERT INTO parties (id, name, phone_normalized, phone_display, address, kind, bank_account_encrypted, bank_ifsc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(partyId, partyName, phoneNormalized, phoneDisplay, address, type === "sale" ? "customer" : "supplier", encryptedBankAccount, bankIfsc || null);
       party = db.prepare("SELECT * FROM parties WHERE id = ?").get(partyId);
     } else {
       const kind = party.kind === (type === "sale" ? "supplier" : "customer") ? "both" : party.kind;
-      db.prepare("UPDATE parties SET name = ?, phone_normalized = ?, phone_display = ?, address = ?, kind = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(partyName, phoneNormalized, phoneDisplay, address, kind, party.id);
+      db.prepare("UPDATE parties SET name = ?, phone_normalized = ?, phone_display = ?, address = ?, kind = ?, bank_account_encrypted = ?, bank_ifsc = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(partyName, phoneNormalized, phoneDisplay, address, kind, encryptedBankAccount, bankIfsc || null, party.id);
     }
 
     const billId = nextBillId(type, branchId);

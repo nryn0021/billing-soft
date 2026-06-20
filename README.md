@@ -15,6 +15,8 @@ A local-first billing and inventory workspace for Jai Mata Di Gud Mill.
 - Branch filtering for Amarpur and Samukhiya offices
 - Role-based login for admin, manager and biller users
 - Full-screen biller workspace with party search, automatic party creation and built-in calculator
+- Party bank account and IFSC fields for vouchers and future payments
+- Hindi grain names shown beside English names
 - Local SQLite database stored on this computer and portable to a future server
 
 ## Run locally
@@ -57,7 +59,9 @@ Every seeded user must change the temporary password on first sign in. Passwords
 
 ## Database and backup
 
-All live business data is in `data/jmd-mill.sqlite`; SQLite may also create `data/jmd-mill.sqlite-wal` and `data/jmd-mill.sqlite-shm` while the server is running. For a simple backup, stop the server and copy the whole `data` folder. To move to another computer/server later, copy the same folder and run the app from the new machine.
+All live business data is in `data/jmd-mill.sqlite`; SQLite may also create `data/jmd-mill.sqlite-wal` and `data/jmd-mill.sqlite-shm` while the server is running. Bank account numbers are encrypted with the local key in `data/.jmd-secret`.
+
+For a simple backup, stop the server and copy the whole `data` folder. To move to another computer/server later, copy the same folder and run the app from the new machine.
 
 ## Verification
 

@@ -234,3 +234,21 @@ tbody tr:last-child td { border-bottom: 0; }
   .invoice-totals-new p { display: flex; justify-content: space-between; margin: 0; padding: 7px; border: 1px solid #aaa; border-bottom: 0; font-size: 10px; }.invoice-totals-new p:last-child { border-bottom: 1px solid #aaa; }.invoice-totals-new .grand { background: #eef4f0; font-size: 12px; font-weight: 800; }
   .biller-print footer { margin-top: 28px; padding-top: 28px !important; border-top: 1px solid #999 !important; display: grid !important; grid-template-columns: 170px 1fr 190px; gap: 14px; align-items: end; }.biller-print footer div { border-top: 1px solid #333; padding-top: 6px; }.biller-print footer p { text-align: center; font-size: 9px; margin: 0; }.biller-print footer span, .biller-print footer strong { display: block; font-size: 10px; }
 }
+
+.biller-signout { height: 44px; padding: 0 16px; border: 1px solid rgba(255,255,255,.2); border-radius: 14px; color: #fff; background: rgba(255,255,255,.1); display: inline-flex; align-items: center; gap: 8px; font-weight: 800; }
+.biller-signout:hover { background: rgba(255,255,255,.16); }
+.biller-profile { padding-right: 12px; }
+.biller-profile > button { display: none !important; }
+.party-suggestions { position: static; z-index: 1; margin-top: 8px; max-height: 150px; box-shadow: none; }
+.party-suggestions button { min-height: 54px; }
+.party-inline-note { margin: 8px 0 0 !important; padding: 9px 11px; border-radius: 12px; color: #38634f !important; background: #eef7f1; border: 1px solid #dcebe2; font-size: 11px !important; }
+.party-bank-fields { margin-top: 10px; }
+.hindi-name { color: #3d7559 !important; font-weight: 800; }
+.summary-product strong, .stock-item strong, .rate-row strong { line-height: 1.3; }
+
+@media print {
+  .invoice-party.invoice-party-grid { grid-template-columns: repeat(4, 1fr) !important; }
+  .invoice-party.invoice-party-grid .wide { grid-column: span 2; }
+  .invoice-party.invoice-party-grid div { min-height: 44px; border-bottom: 1px solid #aaa; }
+  .invoice-party.invoice-party-grid div:nth-last-child(-n+2) { border-bottom: 0; }
+}

@@ -26,8 +26,8 @@ The application now runs as a local Node.js API plus React client with SQLite as
 - `branches`: business locations and invoice prefixes
 - `users`: identity, salted password hashes, role and branch scope
 - `sessions`: hashed session tokens and CSRF tokens
-- `parties`: customer/supplier identity, address, phone and running balance
-- `products`: grain catalog, effective base prices and current stock
+- `parties`: customer/supplier identity, address, phone, encrypted bank account, IFSC and running balance
+- `products`: grain catalog, English/Hindi names, effective base prices and current stock
 - `bills`, `bill_lines`: immutable sale/purchase headers and line items
 - `payments`: cash/bank/split payments applied to bills
 - `ledger_entries`: party balances derived from posted bills and payments
@@ -69,12 +69,12 @@ Reports should query posted bills, payments and stock movements by branch and ti
 
 ## Portability
 
-For local use, stop the server and copy the whole `data` folder to back up or move the installation. If the server is running, copy `jmd-mill.sqlite`, `jmd-mill.sqlite-wal` and `jmd-mill.sqlite-shm` together. A later PostgreSQL migration should export/import branches, products, parties, bills, bill lines, payments, stock movements, ledger entries, audit events and users.
+For local use, stop the server and copy the whole `data` folder to back up or move the installation. This includes `jmd-mill.sqlite` and `.jmd-secret`, which is required to decrypt saved bank account numbers. If the server is running, copy `jmd-mill.sqlite`, `jmd-mill.sqlite-wal`, `jmd-mill.sqlite-shm` and `.jmd-secret` together. A later PostgreSQL migration should export/import branches, products, parties, bills, bill lines, payments, stock movements, ledger entries, audit events and users.
 
 ## Before launch
 
 - Confirm invoice fields, GST treatment, CD deduction rules and cash-payment compliance with the company's accountant.
-- Encrypt bank account numbers and restrict decrypted access.
+- Keep bank account encryption keys in protected backups and restrict decrypted access.
 - Add automated backup scheduling and restore drills.
 - Use HTTPS and a VPN/firewall before any office access over the internet.
 - Test concurrent billing, stock-underflow prevention, backup restore and invoice number uniqueness.

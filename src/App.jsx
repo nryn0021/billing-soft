@@ -376,7 +376,7 @@ function StockCard({ products, navigate }) {
         {products.slice(0, 5).map((item, index) => (
           <div className="stock-item" key={item.id}>
             <span className="grain-icon" style={{ background: PRODUCT_COLORS[index] }}>{item.short}</span>
-            <div><strong>{item.name}</strong><span><i style={{ width: `${Math.max(12, (item.stockKg / max) * 100)}%`, background: PRODUCT_COLORS[index] }} /></span></div>
+            <div><strong>{productLabel(item)}</strong><span><i style={{ width: `${Math.max(12, (item.stockKg / max) * 100)}%`, background: PRODUCT_COLORS[index] }} /></span></div>
             <p><strong>{number.format(item.stockKg / 1000)} T</strong><small>{number.format(item.stockKg)} kg</small></p>
           </div>
         ))}
@@ -398,7 +398,7 @@ function RecentTransactions({ transactions, navigate }) {
               <tr key={item.id}>
                 <td><strong>{item.id}</strong><small>{formatDate(item.date)}</small></td>
                 <td>{item.party}<small>{item.branch}</small></td>
-                <td>{item.product}</td>
+                <td>{transactionProductLabel(item)}</td>
                 <td>{number.format(item.totalKg / 100)} Qtl</td>
                 <td><strong>{inr.format(item.netAmount)}</strong></td>
                 <td><span className={`status-pill ${item.dueAmount ? "pending" : "paid"}`}>{item.dueAmount ? "Part paid" : "Paid"}</span></td>
@@ -436,7 +436,7 @@ function TransactionsView({ transactions, openBilling }) {
       </div>
       <article className="panel data-panel">
         <div className="data-toolbar"><label><FiSearch /><input placeholder="Search bill, party or item..." /></label><button><FiSliders /> Filter</button><button><FiPrinter /> Export</button></div>
-        <div className="table-wrap full-table"><table><thead><tr><th>Bill no.</th><th>Type</th><th>Date</th><th>Party</th><th>Product</th><th>Weight</th><th>Rate / kg</th><th>Net amount</th><th>Due</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><strong>{item.id}</strong></td><td><span className={`type-pill ${item.type}`}>{item.type}</span></td><td>{formatDate(item.date)}</td><td>{item.party}<small>{item.branch}</small></td><td>{item.product}</td><td>{number.format(item.totalKg)} kg</td><td>{preciseInr.format(item.rate)}</td><td><strong>{inr.format(item.netAmount)}</strong></td><td className={item.dueAmount ? "amount-due" : "amount-clear"}>{item.dueAmount ? inr.format(item.dueAmount) : "Clear"}</td></tr>)}</tbody></table></div>
+        <div className="table-wrap full-table"><table><thead><tr><th>Bill no.</th><th>Type</th><th>Date</th><th>Party</th><th>Product</th><th>Weight</th><th>Rate / kg</th><th>Net amount</th><th>Due</th></tr></thead><tbody>{visible.map((item) => <tr key={item.id}><td><strong>{item.id}</strong></td><td><span className={`type-pill ${item.type}`}>{item.type}</span></td><td>{formatDate(item.date)}</td><td>{item.party}<small>{item.branch}</small></td><td>{transactionProductLabel(item)}</td><td>{number.format(item.totalKg)} kg</td><td>{preciseInr.format(item.rate)}</td><td><strong>{inr.format(item.netAmount)}</strong></td><td className={item.dueAmount ? "amount-due" : "amount-clear"}>{item.dueAmount ? inr.format(item.dueAmount) : "Clear"}</td></tr>)}</tbody></table></div>
       </article>
     </div>
   );
@@ -451,7 +451,7 @@ function PartiesView({ parties }) {
       <article className="panel data-panel">
         <div className="data-toolbar"><label><FiSearch /><input placeholder="Search by name, phone or party ID..." /></label><button><FiSliders /> All parties</button></div>
         <div className="party-grid">
-          {parties.map((party) => <div className="party-card" key={party.id}><div className="party-avatar">{initials(party.name)}</div><div className="party-main"><span className={`ledger-label ${party.balanceType}`}>{party.balanceType}</span><h3>{party.name}</h3><p>{party.id} · {party.phone}</p><small>{party.address}</small></div><div className="party-balance"><span>{party.balanceType === "debtor" ? "You will receive" : "You have to pay"}</span><strong>{inr.format(party.balance)}</strong><button>View ledger <FiArrowRight /></button></div></div>)}
+          {parties.map((party) => <div className="party-card" key={party.id}><div className="party-avatar">{initials(party.name)}</div><div className="party-main"><span className={`ledger-label ${party.balanceType}`}>{party.balanceType}</span><h3>{party.name}</h3><p>{party.id} · {party.phone}</p><small>{party.address}</small>{party.bankAccount && <small>Bank: {party.bankAccount} · IFSC: {party.bankIfsc}</small>}</div><div className="party-balance"><span>{party.balanceType === "debtor" ? "You will receive" : "You have to pay"}</span><strong>{inr.format(party.balance)}</strong><button>View ledger <FiArrowRight /></button></div></div>)}
         </div>
       </article>
     </div>
@@ -464,7 +464,7 @@ function InventoryView({ products, openBilling }) {
   return (
     <div className="page-body inner-page">
       <section className="inventory-summary"><div><FiPackage /><span>Total physical stock<strong>{number.format(stock / 1000)} tonnes</strong></span></div><div><FiCreditCard /><span>Estimated stock value<strong>{inr.format(value)}</strong></span></div><div className="button-row"><button className="secondary-button" onClick={() => openBilling("sale")}>Stock out</button><button className="primary-button" onClick={() => openBilling("purchase")}>Stock in</button></div></section>
-      <div className="inventory-grid">{products.map((item, index) => <article className="inventory-card" key={item.id}><div className="inventory-card-top"><span className="grain-icon large" style={{ background: PRODUCT_COLORS[index % PRODUCT_COLORS.length] }}>{item.short}</span><span className="healthy">In stock</span></div><h3>{item.name}</h3><p>{item.category}</p><strong>{number.format(item.stockKg / 1000)} <small>tonnes</small></strong><div><span>{number.format(item.stockKg)} kg available</span><span>@ {preciseInr.format(item.baseRate)}/kg</span></div><button onClick={() => openBilling("sale")}>Create sale bill <FiArrowRight /></button></article>)}</div>
+      <div className="inventory-grid">{products.map((item, index) => <article className="inventory-card" key={item.id}><div className="inventory-card-top"><span className="grain-icon large" style={{ background: PRODUCT_COLORS[index % PRODUCT_COLORS.length] }}>{item.short}</span><span className="healthy">In stock</span></div><h3>{item.name}</h3>{item.hindiName && <p className="hindi-name">{item.hindiName}</p>}<p>{item.category}</p><strong>{number.format(item.stockKg / 1000)} <small>tonnes</small></strong><div><span>{number.format(item.stockKg)} kg available</span><span>@ {preciseInr.format(item.baseRate)}/kg</span></div><button onClick={() => openBilling("sale")}>Create sale bill <FiArrowRight /></button></article>)}</div>
     </div>
   );
 }
@@ -482,7 +482,7 @@ function RatesView({ products, audits, updateRate, role }) {
 
 function RateRow({ product, updateRate, canEdit }) {
   const [rate, setRate] = useState(product.baseRate);
-  return <div className="rate-row"><div className="grain-icon">{product.short}</div><div><strong>{product.name}</strong><small>{product.category}</small></div><label><span>₹</span><input type="number" step="0.01" min="0" value={rate} onChange={(event) => setRate(event.target.value)} disabled={!canEdit} /><small>per kg</small></label><button disabled={!canEdit || Number(rate) === product.baseRate} onClick={() => updateRate(product.id, rate)}>Update</button></div>;
+  return <div className="rate-row"><div className="grain-icon">{product.short}</div><div><strong>{product.name}</strong><small>{product.hindiName || product.category}</small></div><label><span>₹</span><input type="number" step="0.01" min="0" value={rate} onChange={(event) => setRate(event.target.value)} disabled={!canEdit} /><small>per kg</small></label><button disabled={!canEdit || Number(rate) === product.baseRate} onClick={() => updateRate(product.id, rate)}>Update</button></div>;
 }
 
 function ReportsView({ data, transactions }) {
@@ -493,7 +493,7 @@ function ReportsView({ data, transactions }) {
     <div className="page-body inner-page">
       <div className="page-tools"><div className="segmented"><button>Day</button><button>Week</button><button className="active">Month</button><button>Quarter</button><button>FY 2026-27</button></div><button className="secondary-button"><FiPrinter /> Export report</button></div>
       <section className="report-cards"><div><span>Gross sales</span><strong>{inr.format(sales)}</strong><small>Across {transactions.filter((item) => item.type === "sale").length} bills</small></div><div><span>Total purchases</span><strong>{inr.format(purchases)}</strong><small>Across {transactions.filter((item) => item.type === "purchase").length} bills</small></div><div><span>Gross difference</span><strong className={profit >= 0 ? "positive" : "negative"}>{inr.format(profit)}</strong><small>Before expenses and taxes</small></div><div><span>Stock value</span><strong>{inr.format(data.products.reduce((sum, item) => sum + item.stockKg * item.baseRate, 0))}</strong><small>At current base rates</small></div></section>
-      <div className="reports-grid"><SalesChart transactions={transactions} /><article className="panel product-report"><PanelHeader title="Top products" subtitle="By billed value" /><div>{data.products.slice(0, 6).map((item, index) => <p key={item.id}><span><i>{index + 1}</i>{item.name}</span><strong>{number.format(item.stockKg / 1000)} T</strong></p>)}</div></article></div>
+      <div className="reports-grid"><SalesChart transactions={transactions} /><article className="panel product-report"><PanelHeader title="Top products" subtitle="By billed value" /><div>{data.products.slice(0, 6).map((item, index) => <p key={item.id}><span><i>{index + 1}</i>{productLabel(item)}</span><strong>{number.format(item.stockKg / 1000)} T</strong></p>)}</div></article></div>
     </div>
   );
 }
@@ -588,7 +588,7 @@ function BillComposer({ type, products, parties, branches, selectedBranch, close
             <label><span>Office *</span><select value={form.branchId} onChange={(event) => update("branchId", event.target.value)}>{branches.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
           </div></div>
           <div className="form-section"><h3><span>2</span> Grain & weight</h3><div className="form-grid three">
-            <label className="wide"><span>Product *</span><select value={form.productId} onChange={(event) => changeProduct(event.target.value)}>{products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><small>Selected stock: {number.format(product.stockKg)} kg</small></label>
+            <label className="wide"><span>Product *</span><select value={form.productId} onChange={(event) => changeProduct(event.target.value)}>{products.map((item) => <option value={item.id} key={item.id}>{productLabel(item)}</option>)}</select><small>Selected stock: {number.format(product.stockKg)} kg</small></label>
             <label><span>Quantity *</span><input type="number" min="0" step="0.01" value={form.quantity} onChange={(event) => update("quantity", event.target.value)} /></label>
             <label><span>Unit *</span><select value={form.unit} onChange={(event) => update("unit", event.target.value)}><option value="kg">Kilogram (kg)</option><option value="quintal">Quintal (100 kg)</option><option value="tonne">Tonne (1,000 kg)</option></select></label>
           </div><div className="conversion-note"><FiActivity /> {form.quantity || 0} {form.unit} = <strong>{number.format(totalKg)} kg</strong></div></div>
@@ -609,7 +609,7 @@ function BillComposer({ type, products, parties, branches, selectedBranch, close
 
 function PrintableInvoice({ invoice }) {
   if (!invoice) return null;
-  return <section className="print-invoice"><header><div><strong>JAI MATA DI GUD MILL</strong><span>Grain Trading & Processing</span></div><h1>{invoice.type === "sale" ? "TAX INVOICE" : "PURCHASE VOUCHER"}</h1></header><div className="invoice-meta"><p><span>Bill number</span><strong>{invoice.id}</strong></p><p><span>Date</span><strong>{formatDate(invoice.date)}</strong></p><p><span>Branch</span><strong>{invoice.branch}</strong></p><p><span>Party</span><strong>{invoice.party}</strong></p></div><table><thead><tr><th>Description</th><th>Weight</th><th>Rate/kg</th><th>Amount</th></tr></thead><tbody><tr><td>{invoice.product}</td><td>{number.format(invoice.totalKg)} kg</td><td>{preciseInr.format(invoice.rate)}</td><td>{preciseInr.format(invoice.gross)}</td></tr></tbody></table><div className="invoice-totals"><p><span>Gross</span><strong>{preciseInr.format(invoice.gross)}</strong></p>{invoice.cdDeduction > 0 && <p><span>CD deduction</span><strong>- {preciseInr.format(invoice.cdDeduction)}</strong></p>}<p className="grand"><span>Net amount</span><strong>{preciseInr.format(invoice.netAmount)}</strong></p><p><span>Paid</span><strong>{preciseInr.format(invoice.paidAmount)}</strong></p><p><span>Balance due</span><strong>{preciseInr.format(invoice.dueAmount)}</strong></p></div><footer><span>Authorised signatory</span><span>Party signature</span></footer></section>;
+  return <section className="print-invoice"><header><div><strong>JAI MATA DI GUD MILL</strong><span>Owner: Pankaj Kumar Das · Contact: +91 99552 99279</span></div><h1>{invoice.type === "sale" ? "SALE INVOICE" : "PURCHASE VOUCHER"}</h1></header><div className="invoice-meta"><p><span>Bill number</span><strong>{invoice.id}</strong></p><p><span>Date</span><strong>{formatDate(invoice.date)}</strong></p><p><span>Branch</span><strong>{invoice.branch}</strong></p><p><span>Party</span><strong>{invoice.party}</strong></p><p><span>Contact</span><strong>{invoice.partyPhone || "Not added"}</strong></p><p><span>Bank / IFSC</span><strong>{invoice.partyBankAccount ? `${invoice.partyBankAccount} / ${invoice.partyBankIfsc}` : "Not added"}</strong></p></div><table><thead><tr><th>Description</th><th>Weight</th><th>Rate/kg</th><th>Amount</th></tr></thead><tbody><tr><td>{transactionProductLabel(invoice)}</td><td>{number.format(invoice.totalKg)} kg</td><td>{preciseInr.format(invoice.rate)}</td><td>{preciseInr.format(invoice.gross)}</td></tr></tbody></table><div className="invoice-totals"><p><span>Gross</span><strong>{preciseInr.format(invoice.gross)}</strong></p>{invoice.cdDeduction > 0 && <p><span>CD deduction</span><strong>- {preciseInr.format(invoice.cdDeduction)}</strong></p>}<p className="grand"><span>Net amount</span><strong>{preciseInr.format(invoice.netAmount)}</strong></p><p><span>Paid</span><strong>{preciseInr.format(invoice.paidAmount)}</strong></p><p><span>Balance due</span><strong>{preciseInr.format(invoice.dueAmount)}</strong></p></div><footer><span>Authorised signatory</span><span>Party signature</span></footer></section>;
 }
 
 function PanelHeader({ title, subtitle, action, onAction }) {
@@ -627,6 +627,14 @@ function formatDateTime(value) {
 function timeAgo(value) {
   const hours = Math.max(1, Math.round((Date.now() - new Date(value).getTime()) / 3600000));
   return hours < 24 ? `${hours}h ago` : `${Math.round(hours / 24)}d ago`;
+}
+
+function productLabel(product) {
+  return product?.hindiName ? `${product.name} · ${product.hindiName}` : product?.name || "";
+}
+
+function transactionProductLabel(transaction) {
+  return transaction?.productHindi ? `${transaction.product} · ${transaction.productHindi}` : transaction?.product || "";
 }
 
 function initials(name) {

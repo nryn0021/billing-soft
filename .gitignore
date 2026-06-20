@@ -16,6 +16,7 @@ dist-ssr
 data/*.sqlite
 data/*.sqlite-*
 data/*.db
+data/.jmd-secret
 
 # Editor directories and files
 .vscode/*
