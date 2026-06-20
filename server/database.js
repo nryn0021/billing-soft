@@ -223,9 +223,9 @@ export function recordSuccessfulLogin(userId) {
 }
 
 export function createSession(userId, token, remember, userAgent) {
-  db.prepare("DELETE FROM sessions WHERE expires_at < CURRENT_TIMESTAMP").run();
+  db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
   const csrf = newCsrfToken();
-  const expiresAt = new Date(Date.now() + (remember ? 30 : 1) * 24 * 60 * 60 * 1000).toISOString();
+  const expiresAt = Date.now() + (remember ? 30 : 1) * 24 * 60 * 60 * 1000;
   db.prepare("INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, user_agent) VALUES (?, ?, ?, ?, ?)").run(tokenHash(token), userId, csrf, expiresAt, String(userAgent || "").slice(0, 250));
   return { csrf, expiresAt };
 }
@@ -234,7 +234,7 @@ export function sessionUser(token) {
   if (!token) return null;
   const row = db.prepare(`SELECT u.*, b.name AS branch_name, s.csrf_token, s.expires_at, s.id AS session_id
     FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN branches b ON b.id = u.branch_id
-    WHERE s.token_hash = ? AND s.expires_at > CURRENT_TIMESTAMP AND u.active = 1`).get(tokenHash(token));
+    WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`).get(tokenHash(token), Date.now());
   if (!row) return null;
   return { ...publicUser(row), csrf: row.csrf_token, sessionId: row.session_id };
 }

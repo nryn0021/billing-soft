@@ -9,6 +9,7 @@ import {
   FiBookOpen,
   FiBox,
   FiChevronDown,
+  FiCheckCircle,
   FiClipboard,
   FiClock,
   FiCreditCard,
@@ -160,14 +161,15 @@ function AdminApp({ initialData, user, onLogout }) {
   return (
     <>
       <div className="app-shell">
-        <Sidebar page={page} navigate={navigate} mobileNav={mobileNav} close={() => setMobileNav(false)} />
+        <Sidebar page={page} navigate={navigate} mobileNav={mobileNav} close={() => setMobileNav(false)} onLogout={onLogout} user={user} />
         <main className="main-content">
           <Topbar
             page={page}
             branch={branch}
             setBranch={setBranch}
             role={role}
-            setRole={setRole}
+            user={user}
+            branches={data.branches}
             openNav={() => setMobileNav(true)}
           />
 
@@ -189,6 +191,7 @@ function AdminApp({ initialData, user, onLogout }) {
             <RatesView products={data.products} audits={data.audits} updateRate={updateRate} role={role} />
           )}
           {page === "reports" && <ReportsView data={data} transactions={branchTransactions} />}
+          {page === "users" && <UsersView branches={data.branches} />}
 
           <footer className="app-footer">Jai Mata Di Gud Mill · Business records synced locally in this prototype</footer>
         </main>
@@ -211,7 +214,7 @@ function AdminApp({ initialData, user, onLogout }) {
   );
 }
 
-function Sidebar({ page, navigate, mobileNav, close }) {
+function Sidebar({ page, navigate, mobileNav, close, onLogout, user }) {
   const nav = [
     { id: "dashboard", label: "Overview", icon: FiGrid },
     { id: "bills", label: "Bills & Invoices", icon: FiFileText },
@@ -219,6 +222,7 @@ function Sidebar({ page, navigate, mobileNav, close }) {
     { id: "inventory", label: "Stock & Inventory", icon: FiPackage },
     { id: "rates", label: "Daily Rate Book", icon: FiSliders },
     { id: "reports", label: "Reports", icon: FiBarChart2 },
+    ...(user.role === "admin" ? [{ id: "users", label: "Users & Access", icon: FiUser }] : []),
   ];
   return (
     <>
@@ -246,7 +250,7 @@ function Sidebar({ page, navigate, mobileNav, close }) {
         <nav>
           <button onClick={() => navigate("parties")}><FiCreditCard /><span>Payments & Dues</span></button>
           <button onClick={() => navigate("reports")}><FiBookOpen /><span>Audit Log</span></button>
-          <button onClick={() => navigate("rates")}><FiSettings /><span>Settings</span></button>
+          <button onClick={() => navigate(user.role === "admin" ? "users" : "rates")}><FiSettings /><span>Settings</span></button>
         </nav>
         <div className="sidebar-help">
           <span><FiActivity /></span>
@@ -254,13 +258,13 @@ function Sidebar({ page, navigate, mobileNav, close }) {
           <p>Business support and data help.</p>
           <button>Contact support</button>
         </div>
-        <button className="logout"><FiLogOut /> Sign out</button>
+        <button className="logout" onClick={onLogout}><FiLogOut /> Sign out</button>
       </aside>
     </>
   );
 }
 
-function Topbar({ page, branch, setBranch, role, setRole, openNav }) {
+function Topbar({ page, branch, setBranch, role, user, branches, openNav }) {
   const titles = {
     dashboard: ["Good morning, Prasen", "Here is what is happening at your mill today."],
     bills: ["Bills & Invoices", "Create, track and print every sale and purchase."],
@@ -268,6 +272,7 @@ function Topbar({ page, branch, setBranch, role, setRole, openNav }) {
     inventory: ["Stock & Inventory", "Live grain stock across both branches."],
     rates: ["Daily Rate Book", "Set today’s default buying and selling rates."],
     reports: ["Business Reports", "See performance across any reporting period."],
+    users: ["Users & Access", "Create secure logins and branch permissions."],
   };
   return (
     <header className="topbar">
@@ -281,21 +286,15 @@ function Topbar({ page, branch, setBranch, role, setRole, openNav }) {
           <FiHome />
           <select value={branch} onChange={(event) => setBranch(event.target.value)}>
             <option>All branches</option>
-            <option>Main Mill</option>
-            <option>Market Yard</option>
+            {branches.map((item) => <option key={item.id}>{item.name}</option>)}
           </select>
           <FiChevronDown />
         </label>
         <button className="icon-button" aria-label="Search"><FiSearch /></button>
         <button className="icon-button notification" aria-label="Notifications"><FiBell /><i /></button>
         <div className="profile">
-          <div className="avatar">PN</div>
-          <div><strong>Prasen Narayan</strong><span>{role}</span></div>
-          <select value={role} onChange={(event) => setRole(event.target.value)} aria-label="Demo role">
-            <option>Admin</option>
-            <option>Manager</option>
-            <option>Biller</option>
-          </select>
+          <div className="avatar">{initials(user.displayName)}</div>
+          <div><strong>{user.displayName}</strong><span>{role}</span></div>
         </div>
       </div>
     </header>
@@ -499,8 +498,56 @@ function ReportsView({ data, transactions }) {
   );
 }
 
+function UsersView({ branches }) {
+  const [users, setUsers] = useState([]);
+  const [form, setForm] = useState({ username: "", displayName: "", role: "biller", branchId: branches[0]?.id || "", password: "" });
+  const [message, setMessage] = useState("");
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    api.users().then((result) => setUsers(result.users)).catch((reason) => setError(reason.message));
+  }, []);
+
+  const update = (key, value) => setForm((current) => ({ ...current, [key]: value }));
+  const submit = async (event) => {
+    event.preventDefault();
+    setError("");
+    setMessage("");
+    try {
+      const result = await api.createUser(form);
+      setUsers(result.users);
+      setMessage(`User ${form.username} created. Share the temporary password privately; they will change it on first sign in.`);
+      setForm({ username: "", displayName: "", role: "biller", branchId: branches[0]?.id || "", password: "" });
+    } catch (reason) { setError(reason.message); }
+  };
+
+  return (
+    <div className="page-body inner-page users-layout">
+      <article className="panel user-create-card">
+        <div className="rate-heading"><div><span className="eyebrow">Secure access</span><h2>Create a login</h2><p>Passwords are saved as salted hashes in the local database. Plain passwords are never stored.</p></div></div>
+        <form className="user-create-form" onSubmit={submit}>
+          {error && <div className="auth-error">{error}</div>}
+          {message && <div className="billing-message success"><FiCheckCircle /> {message}</div>}
+          <label><span>Username</span><input value={form.username} onChange={(event) => update("username", event.target.value)} placeholder="amarpur.biller2" /></label>
+          <label><span>Display name</span><input value={form.displayName} onChange={(event) => update("displayName", event.target.value)} placeholder="Biller full name" /></label>
+          <div className="biller-fields two"><label><span>Role</span><select value={form.role} onChange={(event) => update("role", event.target.value)}><option value="biller">Biller</option><option value="manager">Manager</option><option value="admin">Admin</option></select></label><label><span>Office</span><select value={form.branchId} onChange={(event) => update("branchId", event.target.value)} disabled={form.role !== "biller"}>{branches.map((branch) => <option value={branch.id} key={branch.id}>{branch.name}</option>)}</select></label></div>
+          <label><span>Temporary password</span><input type="password" value={form.password} onChange={(event) => update("password", event.target.value)} placeholder="10+ chars with symbol" /></label>
+          <button className="primary-button">Create user</button>
+        </form>
+      </article>
+      <article className="panel users-list-card">
+        <PanelHeader title="Active users" subtitle="Login details and branch access" />
+        <div className="users-grid">
+          {users.map((item) => <div className="user-access-card" key={item.id}><div className="avatar">{initials(item.displayName)}</div><div><h3>{item.displayName}</h3><p>{item.username}</p><small>{item.role} {item.branch ? `· ${item.branch}` : "· All offices"}</small></div><span className={item.active ? "healthy" : "status-pill pending"}>{item.active ? "Active" : "Inactive"}</span>{item.mustChangePassword && <em>Must change password</em>}</div>)}
+        </div>
+      </article>
+    </div>
+  );
+}
+
 function BillComposer({ type, products, parties, branches, selectedBranch, close, save }) {
   const eligibleParties = parties.filter((party) => type === "sale" ? party.kind !== "supplier" : party.kind !== "customer");
+  const selectedBranchRecord = branches.find((item) => item.name === selectedBranch) || branches[0];
   const [form, setForm] = useState({
     type,
     partyId: eligibleParties[0]?.id || "",
@@ -508,7 +555,7 @@ function BillComposer({ type, products, parties, branches, selectedBranch, close
     quantity: "21.2",
     unit: "quintal",
     rate: String(products[0].baseRate),
-    branch: selectedBranch === "All branches" ? branches[0] : selectedBranch,
+    branchId: selectedBranch === "All branches" ? branches[0].id : selectedBranchRecord.id,
     paymentMethod: type === "purchase" ? "Cash" : "Online",
     paidAmount: "0",
     applyCd: type === "purchase",
@@ -525,10 +572,10 @@ function BillComposer({ type, products, parties, branches, selectedBranch, close
     const next = products.find((item) => item.id === id);
     setForm((current) => ({ ...current, productId: id, rate: String(next.baseRate) }));
   };
-  const submit = (event, print = false) => {
+  const submit = async (event, print = false) => {
     event.preventDefault();
     if (!form.partyId || !form.quantity || Number(form.quantity) <= 0 || !form.rate) return;
-    save(form, print);
+    await save(form, print);
   };
   return (
     <div className="modal-layer" role="dialog" aria-modal="true">
@@ -538,10 +585,10 @@ function BillComposer({ type, products, parties, branches, selectedBranch, close
         <form onSubmit={submit}>
           <div className="form-section"><h3><span>1</span> Bill details</h3><div className="form-grid">
             <label className="wide"><span>Party *</span><select value={form.partyId} onChange={(event) => update("partyId", event.target.value)}>{eligibleParties.map((party) => <option value={party.id} key={party.id}>{party.name} · {party.id}</option>)}</select></label>
-            <label><span>Branch *</span><select value={form.branch} onChange={(event) => update("branch", event.target.value)}>{branches.map((item) => <option key={item}>{item}</option>)}</select></label>
+            <label><span>Office *</span><select value={form.branchId} onChange={(event) => update("branchId", event.target.value)}>{branches.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
           </div></div>
           <div className="form-section"><h3><span>2</span> Grain & weight</h3><div className="form-grid three">
-            <label className="wide"><span>Product *</span><select value={form.productId} onChange={(event) => changeProduct(event.target.value)}>{products.map((item) => <option value={item.id} key={item.id}>{item.name} · Stock {number.format(item.stockKg / 1000)} T</option>)}</select></label>
+            <label className="wide"><span>Product *</span><select value={form.productId} onChange={(event) => changeProduct(event.target.value)}>{products.map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select><small>Selected stock: {number.format(product.stockKg)} kg</small></label>
             <label><span>Quantity *</span><input type="number" min="0" step="0.01" value={form.quantity} onChange={(event) => update("quantity", event.target.value)} /></label>
             <label><span>Unit *</span><select value={form.unit} onChange={(event) => update("unit", event.target.value)}><option value="kg">Kilogram (kg)</option><option value="quintal">Quintal (100 kg)</option><option value="tonne">Tonne (1,000 kg)</option></select></label>
           </div><div className="conversion-note"><FiActivity /> {form.quantity || 0} {form.unit} = <strong>{number.format(totalKg)} kg</strong></div></div>

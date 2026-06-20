@@ -77,6 +77,11 @@ function requireAuth(request, response, roles) {
     json(response, 403, { error: "You do not have permission for this action." });
     return null;
   }
+  const pathname = new URL(request.url, `http://${request.headers.host || "localhost"}`).pathname;
+  if (user.mustChangePassword && !["/api/auth/me", "/api/auth/logout", "/api/auth/change-password"].includes(pathname)) {
+    json(response, 403, { error: "Please change your temporary password before continuing." });
+    return null;
+  }
   if (!["GET", "HEAD", "OPTIONS"].includes(request.method) && request.headers["x-csrf-token"] !== user.csrf) {
     json(response, 403, { error: "Security token expired. Refresh and try again." });
     return null;
