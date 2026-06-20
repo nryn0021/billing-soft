@@ -1,29 +1,41 @@
-# Production Architecture
+# Local and Production Architecture
 
-The React application is currently a local-first prototype. A production deployment should keep calculation and permission rules on the server and use PostgreSQL as the source of truth.
+The application now runs as a local Node.js API plus React client with SQLite as the source of truth. This is suitable for hosting on the office computer first, then moving the `data` folder to a stronger machine or server later. A future multi-site internet deployment can migrate the same domain model to PostgreSQL.
 
-## Recommended shape
+## Current local shape
 
-- React/Vite client, deployed over HTTPS
-- Node.js API with schema validation and database transactions
-- PostgreSQL with automated encrypted backups
+- React/Vite client for the billing, reports and admin screens
+- Node.js HTTP API serving `/api/*` and the production static build
+- SQLite database at `data/jmd-mill.sqlite`
+- Server-side sessions stored as hashed tokens with HttpOnly cookies
+- CSRF protection for mutating requests
+- Role checks enforced in the API for admin, manager and biller access
+- Atomic database transactions for bill posting, stock updates, payments, ledger entries and audit records
+
+## Future server shape
+
+- React/Vite client deployed behind HTTPS
+- Node.js API with the same route boundaries and validation rules
+- PostgreSQL if multiple machines need concurrent internet access
+- Automated encrypted backups and restore tests
 - Object storage for generated invoice PDFs and supporting documents
-- Server-side sessions or short-lived access tokens with refresh-token rotation
+- VPN/private network access for offices before any public internet exposure
 
 ## Core tables
 
 - `branches`: business locations and invoice prefixes
-- `users`, `roles`, `user_branches`: identity and branch-scoped permissions
-- `parties`, `party_bank_accounts`: customer/supplier identity, address and encrypted banking data
-- `products`, `product_rates`, `rate_audit`: grain catalog, effective base prices and changes
+- `users`: identity, salted password hashes, role and branch scope
+- `sessions`: hashed session tokens and CSRF tokens
+- `parties`: customer/supplier identity, address, phone and running balance
+- `products`: grain catalog, effective base prices and current stock
 - `bills`, `bill_lines`: immutable sale/purchase headers and line items
-- `payments`, `payment_allocations`: cash/bank/split payments applied to bills
-- `ledger_entries`: double-entry party balances derived from posted bills and payments
+- `payments`: cash/bank/split payments applied to bills
+- `ledger_entries`: party balances derived from posted bills and payments
 - `stock_movements`: signed quantity movements per product, branch and bill
 - `audit_events`: actor, action, before/after values, branch, timestamp and request ID
-- `opening_balances`: dated imports for initial stock and party balances
+- Future `opening_balances`: dated imports for initial stock and party balances
 
-Store money as fixed-precision decimal or integer paise, and weight as fixed-precision kilograms. Never use binary floating-point values for persisted financial totals.
+Money is stored as integer paise, and weight is stored as integer grams. Do not persist binary floating-point values for financial totals.
 
 ## Access rules
 
@@ -41,7 +53,7 @@ Store money as fixed-precision decimal or integer paise, and weight as fixed-pre
 
 One database transaction should:
 
-1. Lock and read the current product rate and relevant stock rows.
+1. Start an immediate database transaction and read the current product rate and stock row.
 2. Convert the entered unit to kilograms and calculate gross, deduction, net, paid and due values.
 3. Create the bill and bill lines.
 4. Create the signed stock movement: purchase adds stock, sale removes stock.
@@ -55,9 +67,14 @@ Posted bills should not be silently edited. Corrections should use cancellation 
 
 Reports should query posted bills, payments and stock movements by branch and timezone. Provide presets for day, week, month, quarter, calendar year and Indian financial year, plus CSV/PDF export. Opening balances must use an effective date so historical reports remain reproducible.
 
+## Portability
+
+For local use, stop the server and copy the whole `data` folder to back up or move the installation. If the server is running, copy `jmd-mill.sqlite`, `jmd-mill.sqlite-wal` and `jmd-mill.sqlite-shm` together. A later PostgreSQL migration should export/import branches, products, parties, bills, bill lines, payments, stock movements, ledger entries, audit events and users.
+
 ## Before launch
 
 - Confirm invoice fields, GST treatment, CD deduction rules and cash-payment compliance with the company's accountant.
 - Encrypt bank account numbers and restrict decrypted access.
-- Add database-level row security or equivalent API authorization.
+- Add automated backup scheduling and restore drills.
+- Use HTTPS and a VPN/firewall before any office access over the internet.
 - Test concurrent billing, stock-underflow prevention, backup restore and invoice number uniqueness.

@@ -193,7 +193,7 @@ function AdminApp({ initialData, user, onLogout }) {
           {page === "reports" && <ReportsView data={data} transactions={branchTransactions} />}
           {page === "users" && <UsersView branches={data.branches} />}
 
-          <footer className="app-footer">Jai Mata Di Gud Mill · Business records synced locally in this prototype</footer>
+          <footer className="app-footer">Jai Mata Di Gud Mill · Business records stored locally in SQLite</footer>
         </main>
 
         {billType && (

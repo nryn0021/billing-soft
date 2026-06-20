@@ -179,8 +179,9 @@ function seedDatabase() {
   if (billCount === 0) {
     const insertBill = db.prepare("INSERT INTO bills (id, bill_type, party_id, branch_id, gross_paise, deduction_paise, net_paise, paid_paise, due_paise, payment_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
     const insertLine = db.prepare("INSERT INTO bill_lines (bill_id, product_id, entered_quantity, entered_unit, weight_grams, rate_paise_per_kg, base_rate_paise_per_kg, amount_paise) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    const seedBranchIds = new Map([["Amarpur", "AMARPUR"], ["Samukhiya", "SAMUKHIYA"]]);
     for (const item of INITIAL_DATA.transactions) {
-      const branchId = item.branch === "Main Mill" ? "AMARPUR" : "SAMUKHIYA";
+      const branchId = seedBranchIds.get(item.branch) || "AMARPUR";
       insertBill.run(item.id, item.type, item.partyId, branchId, Math.round(item.gross * 100), Math.round(item.cdDeduction * 100), Math.round(item.netAmount * 100), Math.round(item.paidAmount * 100), Math.round(item.dueAmount * 100), item.paymentMethod, item.date);
       insertLine.run(item.id, item.productId, item.quantity, item.unit, Math.round(item.totalKg * 1000), Math.round(item.rate * 100), Math.round(item.baseRate * 100), Math.round(item.gross * 100));
     }
