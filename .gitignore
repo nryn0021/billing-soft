@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Local business data and secrets (back up separately; never commit)
+data/*.sqlite
+data/*.sqlite-*
+data/*.db
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

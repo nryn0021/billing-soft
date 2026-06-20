@@ -1,13 +1,17 @@
 {
-  "name": "task-dashboard",
+  "name": "jmd-mill-billing",
   "private": true,
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node server/dev.js",
+    "dev:client": "vite",
+    "dev:server": "node --watch server/index.js",
     "build": "vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "start": "node server/index.js",
+    "db:init": "node server/init-db.js"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
