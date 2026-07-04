@@ -17,15 +17,30 @@ A local-first billing and inventory workspace for Jai Mata Di Gud Mill.
 - Full-screen biller workspace with party search, automatic party creation and built-in calculator
 - Party bank account and IFSC fields for vouchers and future payments
 - Hindi grain names shown beside English names
-- Local SQLite database stored on this computer and portable to a future server
+- Multi-tenant PostgreSQL backend (Drizzle ORM) with strict per-tenant data isolation
+- UUID primary keys with the readable IDs (`PTY-1001`, `SAL-AMP-0001`) preserved as `display_id`
 
-## Run locally
+## Deploy with Docker (mini-server)
 
-Requirements: Node.js `22.5.0` or newer because the server uses Node's built-in SQLite driver.
+The fastest way to run the full stack (app + PostgreSQL 16):
+
+```bash
+cp .env.example .env          # then set JMD_DATA_SECRET and change the passwords
+docker compose up --build
+```
+
+Open `http://localhost:8787`. On first boot the app container pushes the schema
+(`drizzle-kit push`) and seeds the default tenant. Data persists in the
+`jmd_pgdata` Docker volume.
+
+## Run locally (without Docker)
+
+Requirements: Node.js `22.5.0`+ and a reachable PostgreSQL 16 database.
 
 ```bash
 npm install
-npm run db:init
+cp .env.example .env          # set DATABASE_URL + JMD_DATA_SECRET
+npm run db:init               # drizzle-kit push + seed the default tenant
 npm run dev
 ```
 
@@ -33,35 +48,44 @@ The app runs with:
 
 - React/Vite client at `http://localhost:5173`
 - Node API at `http://localhost:8787`
-- SQLite database at `data/jmd-mill.sqlite`
+- PostgreSQL as configured by `DATABASE_URL`
 
-For a local hosted build on this computer:
+For a local hosted build:
 
 ```bash
 npm run build
 npm start
 ```
 
-Open `http://localhost:8787`. Other devices on the same network can use this computer's LAN IP and port `8787` if the firewall allows it.
+Useful scripts: `npm run db:push` (sync schema), `npm run db:seed` (seed data),
+`npm run db:generate` (emit versioned SQL migrations when you adopt them).
 
 ## First login
 
-Default temporary accounts are created only when the database is empty:
+Sign in with the **mill code** (tenant slug) plus a username. The default tenant
+is seeded as `jmd`. Temporary accounts are created only when the tenant has no users:
 
-| Role | Username | Temporary password |
-| --- | --- | --- |
-| Admin | `pankaj` | `JMD@9955299279` |
-| Amarpur biller | `amarpur.biller` | `Biller@2026` |
-| Samukhiya biller | `samukhiya.biller` | `Biller@2026` |
-| Manager | `manager` | `Manager@2026` |
+| Role | Mill code | Username | Temporary password |
+| --- | --- | --- | --- |
+| Admin | `jmd` | `pankaj` | `JMD@9955299279` |
+| Amarpur biller | `jmd` | `amarpur.biller` | `Biller@2026` |
+| Samukhiya biller | `jmd` | `samukhiya.biller` | `Biller@2026` |
+| Manager | `jmd` | `manager` | `Manager@2026` |
 
-Every seeded user must change the temporary password on first sign in. Passwords are stored as salted hashes, not as plain text.
+Every seeded user must change the temporary password on first sign in. Passwords are stored as salted scrypt hashes, not as plain text.
 
 ## Database and backup
 
-All live business data is in `data/jmd-mill.sqlite`; SQLite may also create `data/jmd-mill.sqlite-wal` and `data/jmd-mill.sqlite-shm` while the server is running. Bank account numbers are encrypted with the local key in `data/.jmd-secret`.
+Business data lives in PostgreSQL. Bank account numbers are encrypted at the
+application layer with AES-256-GCM using `JMD_DATA_SECRET` (or `data/.jmd-secret`
+when the env var is unset). **Back up that secret separately** — without it,
+encrypted bank details cannot be decrypted.
 
-For a simple backup, stop the server and copy the whole `data` folder. To move to another computer/server later, copy the same folder and run the app from the new machine.
+Back up the database with `pg_dump` (or the managed provider's snapshots), e.g.:
+
+```bash
+docker compose exec db pg_dump -U jmd jmd_mill > backup.sql
+```
 
 ## Verification
 

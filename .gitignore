@@ -12,6 +12,11 @@ dist
 dist-ssr
 *.local
 
+# Environment / secrets (never commit; .env.example is the safe template)
+.env
+.env.*
+!.env.example
+
 # Local business data and secrets (back up separately; never commit)
 data/*.sqlite
 data/*.sqlite-*

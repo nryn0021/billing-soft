@@ -25,8 +25,8 @@ export const api = {
   async session() {
     return request("/api/auth/me");
   },
-  async login(username, password, remember) {
-    return request("/api/auth/login", { method: "POST", body: JSON.stringify({ username, password, remember }) });
+  async login(tenant, username, password, remember) {
+    return request("/api/auth/login", { method: "POST", body: JSON.stringify({ tenant, username, password, remember }) });
   },
   async logout() {
     try { await request("/api/auth/logout", { method: "POST" }); } finally { csrfToken = ""; }
@@ -47,5 +47,35 @@ export const api = {
   },
   async createUser(user) {
     return request("/api/users", { method: "POST", body: JSON.stringify(user) });
+  },
+  async resetUserPassword(userId) {
+    return request(`/api/users/${encodeURIComponent(userId)}/reset-password`, { method: "POST" });
+  },
+  async setUserActive(userId, active) {
+    return request(`/api/users/${encodeURIComponent(userId)}/active`, { method: "POST", body: JSON.stringify({ active }) });
+  },
+  async forgotPassword(tenant, username) {
+    return request("/api/auth/forgot", { method: "POST", body: JSON.stringify({ tenant, username }) });
+  },
+  async resetPassword(tenant, token, password) {
+    return request("/api/auth/reset", { method: "POST", body: JSON.stringify({ tenant, token, password }) });
+  },
+  async getSettings() {
+    return request("/api/settings");
+  },
+  async updateSettings(patch) {
+    return request("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
+  },
+  async adjustStock(payload) {
+    return request("/api/inventory/adjust", { method: "POST", body: JSON.stringify(payload) });
+  },
+  async transferStock(payload) {
+    return request("/api/inventory/transfer", { method: "POST", body: JSON.stringify(payload) });
+  },
+  async stockMovements() {
+    return request("/api/inventory/movements");
+  },
+  async audit() {
+    return request("/api/audit");
   },
 };

@@ -1,0 +1,14 @@
+{
+  "name": "Jai Mata Di Gud Mill — Billing & ERP",
+  "short_name": "JMD Mill",
+  "description": "Billing, inventory and party ledgers for Jai Mata Di Gud Mill.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#0b0e11",
+  "theme_color": "#15764f",
+  "icons": [
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}

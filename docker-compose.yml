@@ -1,0 +1,49 @@
+# Mini-server deployment: PostgreSQL 16 + the Node/React app.
+# Usage:
+#   cp .env.example .env   # then set JMD_DATA_SECRET (and change passwords)
+#   docker compose up --build
+# App is served on http://localhost:8787 (sign in with mill code "jmd").
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-jmd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-jmd_password}
+      POSTGRES_DB: ${POSTGRES_DB:-jmd_mill}
+    volumes:
+      - jmd_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-jmd} -d ${POSTGRES_DB:-jmd_mill}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    # Port intentionally not published to the host; the app reaches it over the
+    # compose network. Uncomment to inspect the DB from your machine:
+    # ports:
+    #   - "5432:5432"
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      DATABASE_URL: postgres://${POSTGRES_USER:-jmd}:${POSTGRES_PASSWORD:-jmd_password}@db:5432/${POSTGRES_DB:-jmd_mill}
+      PGSSL: "false"
+      JMD_HTTPS: ${JMD_HTTPS:-false}
+      # Required — bank-account encryption key. Set it in .env.
+      JMD_DATA_SECRET: ${JMD_DATA_SECRET:?Set JMD_DATA_SECRET in your .env file}
+      JMD_TENANT_SLUG: ${JMD_TENANT_SLUG:-jmd}
+      JMD_TENANT_NAME: ${JMD_TENANT_NAME:-Jai Mata Di Gud Mill}
+    ports:
+      - "8787:8787"
+
+volumes:
+  jmd_pgdata:

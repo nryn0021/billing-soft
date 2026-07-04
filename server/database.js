@@ -1,370 +1,420 @@
-import { DatabaseSync } from "node:sqlite";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import { INITIAL_DATA } from "../src/data/seed.js";
-import { hashPassword, newCsrfToken, normalizePhone, tokenHash } from "./security.js";
+// Data-access layer, rewritten from raw SQLite onto Drizzle + PostgreSQL.
+//
+// Isolation contract: every read, write and update filters/stamps `tenant_id`,
+// derived from the authenticated session user (`user.tenantId`). No query in this
+// module touches another tenant's rows.
+//
+// Frontend contract: structural keys are UUIDs, but this layer always returns the
+// readable identifiers (display_id / branch code) as `id`/`productId`/`partyId`/
+// branch `id`, and accepts them on writes, so the React app is unchanged.
+//
+// Preserved from the original: integer paise / integer grams math, AES-256-GCM bank
+// encryption, scrypt hashing, CSRF + hashed session tokens, and a single atomic
+// transaction covering bill + lines + stock + payment + ledger + audit.
+import { and, asc, desc, eq, gt, lt, sql } from "drizzle-orm";
+import { db } from "./db.js";
+import {
+  appSettings,
+  auditEvents,
+  billLines,
+  bills,
+  branches,
+  ledgerEntries,
+  parties,
+  passwordResets,
+  payments,
+  products,
+  sessions,
+  stockMovements,
+  tenants,
+  users,
+} from "./schema.js";
+import { decryptSensitive, encryptSensitive } from "./crypto.js";
+import { hashPassword, newCsrfToken, newSessionToken, normalizePhone, tokenHash } from "./security.js";
+import { PERMISSION_GROUPS, resolvePermissions } from "./permissions.js";
+import { withDefaults } from "./settings.js";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const dataDirectory = process.env.JMD_DATA_DIR ? path.resolve(process.env.JMD_DATA_DIR) : path.join(root, "data");
-mkdirSync(dataDirectory, { recursive: true });
-
-export const databasePath = path.join(dataDirectory, "jmd-mill.sqlite");
-const secretPath = path.join(dataDirectory, ".jmd-secret");
-export const db = new DatabaseSync(databasePath);
-db.exec("PRAGMA foreign_keys = ON; PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA busy_timeout = 5000;");
-
-function readDataSecret() {
-  if (process.env.JMD_DATA_SECRET) return process.env.JMD_DATA_SECRET;
-  if (!existsSync(secretPath)) writeFileSync(secretPath, randomBytes(32).toString("base64url"), { mode: 0o600 });
-  return readFileSync(secretPath, "utf8").trim();
+// Enriched audit writer — records actor, action, entity, before/after and request context.
+async function writeAudit(executor, entry) {
+  await executor.insert(auditEvents).values({
+    tenantId: entry.tenantId,
+    actorUserId: entry.actorUserId ?? null,
+    actorName: entry.actorName ?? null,
+    eventKind: entry.eventKind,
+    description: entry.description,
+    metadata: entry.metadata ?? null,
+    action: entry.action ?? null,
+    entity: entry.entity ?? null,
+    entityId: entry.entityId ?? null,
+    oldValue: entry.oldValue == null ? null : String(entry.oldValue),
+    newValue: entry.newValue == null ? null : String(entry.newValue),
+    ipAddress: entry.ctx?.ip ?? null,
+    device: entry.ctx?.device ?? null,
+  });
 }
 
-const dataKey = createHash("sha256").update(readDataSecret()).digest();
-
-function encryptSensitive(value) {
-  const text = String(value || "").trim();
-  if (!text) return null;
-  const iv = randomBytes(12);
-  const cipher = createCipheriv("aes-256-gcm", dataKey, iv);
-  const encrypted = Buffer.concat([cipher.update(text, "utf8"), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `v1:${iv.toString("base64url")}:${tag.toString("base64url")}:${encrypted.toString("base64url")}`;
+/** Record an arbitrary audit event (login, exports, etc.) outside a transaction. */
+export async function logAudit(user, entry) {
+  await writeAudit(db, {
+    tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName,
+    eventKind: entry.eventKind || "event", action: entry.action, entity: entry.entity, entityId: entry.entityId,
+    description: entry.description, metadata: entry.metadata, ctx: entry.ctx,
+  });
 }
 
-function decryptSensitive(value) {
-  const text = String(value || "");
-  if (!text) return "";
-  if (!text.startsWith("v1:")) return text;
-  try {
-    const [, ivText, tagText, encryptedText] = text.split(":");
-    const decipher = createDecipheriv("aes-256-gcm", dataKey, Buffer.from(ivText, "base64url"));
-    decipher.setAuthTag(Buffer.from(tagText, "base64url"));
-    return Buffer.concat([decipher.update(Buffer.from(encryptedText, "base64url")), decipher.final()]).toString("utf8");
-  } catch {
-    return "";
-  }
+// ---------------------------------------------------------------------------
+// Settings (per-tenant JSON document)
+// ---------------------------------------------------------------------------
+
+export async function getSettings(tenantId) {
+  const [row] = await db.select().from(appSettings).where(eq(appSettings.tenantId, tenantId)).limit(1);
+  return withDefaults(row?.data);
 }
 
-const schema = `
-CREATE TABLE IF NOT EXISTS branches (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  invoice_prefix TEXT NOT NULL UNIQUE,
-  active INTEGER NOT NULL DEFAULT 1
-);
-CREATE TABLE IF NOT EXISTS users (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  username TEXT NOT NULL UNIQUE COLLATE NOCASE,
-  display_name TEXT NOT NULL,
-  password_hash TEXT NOT NULL,
-  password_salt TEXT NOT NULL,
-  role TEXT NOT NULL CHECK (role IN ('admin','manager','biller')),
-  branch_id TEXT REFERENCES branches(id),
-  active INTEGER NOT NULL DEFAULT 1,
-  must_change_password INTEGER NOT NULL DEFAULT 1,
-  failed_attempts INTEGER NOT NULL DEFAULT 0,
-  locked_until TEXT,
-  last_login_at TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS sessions (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  token_hash TEXT NOT NULL UNIQUE,
-  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-  csrf_token TEXT NOT NULL,
-  expires_at TEXT NOT NULL,
-  user_agent TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS products (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL UNIQUE,
-  hindi_name TEXT,
-  short_code TEXT NOT NULL,
-  category TEXT NOT NULL,
-  base_rate_paise INTEGER NOT NULL CHECK (base_rate_paise >= 0),
-  stock_grams INTEGER NOT NULL DEFAULT 0 CHECK (stock_grams >= 0),
-  active INTEGER NOT NULL DEFAULT 1,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS parties (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  phone_normalized TEXT NOT NULL UNIQUE,
-  phone_display TEXT NOT NULL,
-  address TEXT NOT NULL,
-  kind TEXT NOT NULL CHECK (kind IN ('customer','supplier','both')),
-  balance_paise INTEGER NOT NULL DEFAULT 0,
-  balance_type TEXT NOT NULL DEFAULT 'debtor' CHECK (balance_type IN ('debtor','creditor')),
-  bank_account_encrypted TEXT,
-  bank_ifsc TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS bills (
-  id TEXT PRIMARY KEY,
-  bill_type TEXT NOT NULL CHECK (bill_type IN ('sale','purchase')),
-  party_id TEXT NOT NULL REFERENCES parties(id),
-  branch_id TEXT NOT NULL REFERENCES branches(id),
-  created_by INTEGER REFERENCES users(id),
-  gross_paise INTEGER NOT NULL,
-  deduction_paise INTEGER NOT NULL DEFAULT 0,
-  net_paise INTEGER NOT NULL,
-  paid_paise INTEGER NOT NULL DEFAULT 0,
-  due_paise INTEGER NOT NULL DEFAULT 0,
-  payment_method TEXT NOT NULL,
-  status TEXT NOT NULL DEFAULT 'posted' CHECK (status IN ('posted','cancelled')),
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS bill_lines (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  bill_id TEXT NOT NULL REFERENCES bills(id) ON DELETE RESTRICT,
-  product_id TEXT NOT NULL REFERENCES products(id),
-  entered_quantity REAL NOT NULL,
-  entered_unit TEXT NOT NULL CHECK (entered_unit IN ('kg','quintal','tonne')),
-  weight_grams INTEGER NOT NULL,
-  rate_paise_per_kg INTEGER NOT NULL,
-  base_rate_paise_per_kg INTEGER NOT NULL,
-  amount_paise INTEGER NOT NULL
-);
-CREATE TABLE IF NOT EXISTS payments (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  bill_id TEXT NOT NULL REFERENCES bills(id),
-  party_id TEXT NOT NULL REFERENCES parties(id),
-  amount_paise INTEGER NOT NULL,
-  method TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS stock_movements (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  bill_id TEXT REFERENCES bills(id),
-  product_id TEXT NOT NULL REFERENCES products(id),
-  branch_id TEXT NOT NULL REFERENCES branches(id),
-  quantity_grams INTEGER NOT NULL,
-  movement_type TEXT NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS ledger_entries (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  bill_id TEXT REFERENCES bills(id),
-  party_id TEXT NOT NULL REFERENCES parties(id),
-  entry_type TEXT NOT NULL,
-  amount_paise INTEGER NOT NULL,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE TABLE IF NOT EXISTS audit_events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  actor_user_id INTEGER REFERENCES users(id),
-  event_kind TEXT NOT NULL,
-  description TEXT NOT NULL,
-  metadata TEXT,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-CREATE INDEX IF NOT EXISTS idx_bills_created_at ON bills(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_bills_branch ON bills(branch_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_parties_name ON parties(name COLLATE NOCASE);
-CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
-CREATE INDEX IF NOT EXISTS idx_stock_product_branch ON stock_movements(product_id, branch_id);
-`;
-
-db.exec(schema);
-
-function ensureColumn(table, column, definition) {
-  const exists = db.prepare(`PRAGMA table_info(${table})`).all().some((item) => item.name === column);
-  if (!exists) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+export async function updateSettings(user, patch, ctx) {
+  const [existing] = await db.select().from(appSettings).where(eq(appSettings.tenantId, user.tenantId)).limit(1);
+  const nextData = withDefaults({ ...(existing?.data || {}), ...patch });
+  if (existing) {
+    await db.update(appSettings).set({ data: nextData, updatedAt: new Date() }).where(eq(appSettings.tenantId, user.tenantId));
+  } else {
+    await db.insert(appSettings).values({ tenantId: user.tenantId, data: nextData });
+  }
+  await writeAudit(db, { tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "settings", action: "update", entity: "settings", entityId: Object.keys(patch).join(","), description: `Settings updated (${Object.keys(patch).join(", ")})`, ctx });
+  return nextData;
 }
 
-ensureColumn("products", "hindi_name", "TEXT");
-ensureColumn("parties", "bank_account_encrypted", "TEXT");
-ensureColumn("parties", "bank_ifsc", "TEXT");
-
-function seedDatabase() {
-  const branchCount = db.prepare("SELECT COUNT(*) AS count FROM branches").get().count;
-  if (branchCount === 0) {
-    const insertBranch = db.prepare("INSERT INTO branches (id, name, invoice_prefix) VALUES (?, ?, ?)");
-    insertBranch.run("AMARPUR", "Amarpur", "AMP");
-    insertBranch.run("SAMUKHIYA", "Samukhiya", "SMK");
-  }
-
-  const userCount = db.prepare("SELECT COUNT(*) AS count FROM users").get().count;
-  if (userCount === 0) {
-    const insertUser = db.prepare("INSERT INTO users (username, display_name, password_hash, password_salt, role, branch_id) VALUES (?, ?, ?, ?, ?, ?)");
-    const accounts = [
-      ["pankaj", "Pankaj Kumar Das", "JMD@9955299279", "admin", null],
-      ["amarpur.biller", "Amarpur Biller", "Biller@2026", "biller", "AMARPUR"],
-      ["samukhiya.biller", "Samukhiya Biller", "Biller@2026", "biller", "SAMUKHIYA"],
-      ["manager", "Mill Manager", "Manager@2026", "manager", null],
-    ];
-    for (const [username, displayName, password, role, branchId] of accounts) {
-      const credentials = hashPassword(password);
-      insertUser.run(username, displayName, credentials.hash, credentials.salt, role, branchId);
-    }
-  }
-
-  const productCount = db.prepare("SELECT COUNT(*) AS count FROM products").get().count;
-  if (productCount === 0) {
-    const insertProduct = db.prepare("INSERT INTO products (id, name, hindi_name, short_code, category, base_rate_paise, stock_grams) VALUES (?, ?, ?, ?, ?, ?, ?)");
-    for (const item of INITIAL_DATA.products) {
-      insertProduct.run(item.id, item.name, item.hindiName, item.short, item.category, Math.round(item.baseRate * 100), Math.round(item.stockKg * 1000));
-    }
-  }
-  const updateHindi = db.prepare("UPDATE products SET hindi_name = ? WHERE id = ? AND (hindi_name IS NULL OR hindi_name = '')");
-  for (const item of INITIAL_DATA.products) updateHindi.run(item.hindiName, item.id);
-
-  const partyCount = db.prepare("SELECT COUNT(*) AS count FROM parties").get().count;
-  if (partyCount === 0) {
-    const insertParty = db.prepare("INSERT INTO parties (id, name, phone_normalized, phone_display, address, kind, balance_paise, balance_type, bank_account_encrypted, bank_ifsc) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    for (const item of INITIAL_DATA.parties) {
-      insertParty.run(item.id, item.name, normalizePhone(item.phone), item.phone, item.address, item.kind, Math.round(item.balance * 100), item.balanceType, encryptSensitive(item.bank?.account), item.bank?.ifsc || null);
-    }
-  }
-
-  const billCount = db.prepare("SELECT COUNT(*) AS count FROM bills").get().count;
-  if (billCount === 0) {
-    const insertBill = db.prepare("INSERT INTO bills (id, bill_type, party_id, branch_id, gross_paise, deduction_paise, net_paise, paid_paise, due_paise, payment_method, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
-    const insertLine = db.prepare("INSERT INTO bill_lines (bill_id, product_id, entered_quantity, entered_unit, weight_grams, rate_paise_per_kg, base_rate_paise_per_kg, amount_paise) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
-    const seedBranchIds = new Map([["Amarpur", "AMARPUR"], ["Samukhiya", "SAMUKHIYA"]]);
-    for (const item of INITIAL_DATA.transactions) {
-      const branchId = seedBranchIds.get(item.branch) || "AMARPUR";
-      insertBill.run(item.id, item.type, item.partyId, branchId, Math.round(item.gross * 100), Math.round(item.cdDeduction * 100), Math.round(item.netAmount * 100), Math.round(item.paidAmount * 100), Math.round(item.dueAmount * 100), item.paymentMethod, item.date);
-      insertLine.run(item.id, item.productId, item.quantity, item.unit, Math.round(item.totalKg * 1000), Math.round(item.rate * 100), Math.round(item.baseRate * 100), Math.round(item.gross * 100));
-    }
-  }
-
-  const auditCount = db.prepare("SELECT COUNT(*) AS count FROM audit_events").get().count;
-  if (auditCount === 0) {
-    const insertAudit = db.prepare("INSERT INTO audit_events (event_kind, description, metadata, created_at) VALUES (?, ?, ?, ?)");
-    for (const item of INITIAL_DATA.audits) insertAudit.run(item.kind, item.text, item.meta, item.date);
-  }
+async function tenantRolePermissions(tenantId) {
+  const [row] = await db.select({ data: appSettings.data }).from(appSettings).where(eq(appSettings.tenantId, tenantId)).limit(1);
+  return row?.data?.rolePermissions || {};
 }
 
-seedDatabase();
+// ---------------------------------------------------------------------------
+// Tenancy + identity
+// ---------------------------------------------------------------------------
+
+export async function findTenantBySlug(slug) {
+  const value = String(slug || "").trim().toLowerCase();
+  if (!value) return null;
+  const [row] = await db
+    .select()
+    .from(tenants)
+    .where(and(sql`lower(${tenants.slug}) = ${value}`, eq(tenants.active, true)))
+    .limit(1);
+  return row || null;
+}
 
 function publicUser(row) {
   if (!row) return null;
   return {
     id: row.id,
     username: row.username,
-    displayName: row.display_name,
+    displayName: row.displayName,
     role: row.role,
-    branchId: row.branch_id,
-    branch: row.branch_name || null,
-    mustChangePassword: Boolean(row.must_change_password),
+    branchId: row.branchCode || null, // readable branch code for the frontend
+    branch: row.branchName || null,
+    mustChangePassword: Boolean(row.mustChangePassword),
+    tenantId: row.tenantId, // internal isolation key; the client ignores it
   };
 }
 
-export function findUser(username) {
-  return db.prepare("SELECT u.*, b.name AS branch_name FROM users u LEFT JOIN branches b ON b.id = u.branch_id WHERE u.username = ? COLLATE NOCASE").get(username);
+export async function findUser(tenantId, username) {
+  const value = String(username || "").trim();
+  if (!tenantId || !value) return null;
+  const [row] = await db
+    .select({
+      id: users.id,
+      tenantId: users.tenantId,
+      username: users.username,
+      displayName: users.displayName,
+      passwordHash: users.passwordHash,
+      passwordSalt: users.passwordSalt,
+      role: users.role,
+      active: users.active,
+      mustChangePassword: users.mustChangePassword,
+      failedAttempts: users.failedAttempts,
+      lockedUntil: users.lockedUntil,
+      branchCode: branches.code,
+      branchName: branches.name,
+    })
+    .from(users)
+    .leftJoin(branches, eq(branches.id, users.branchId))
+    .where(and(eq(users.tenantId, tenantId), sql`lower(${users.username}) = lower(${value})`))
+    .limit(1);
+  return row || null;
 }
 
-export function recordFailedLogin(user) {
-  const attempts = Number(user.failed_attempts || 0) + 1;
-  const lockedUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000).toISOString() : null;
-  db.prepare("UPDATE users SET failed_attempts = ?, locked_until = ? WHERE id = ?").run(attempts >= 5 ? 0 : attempts, lockedUntil, user.id);
+export async function recordFailedLogin(user) {
+  const attempts = Number(user.failedAttempts || 0) + 1;
+  const lockedUntil = attempts >= 5 ? new Date(Date.now() + 15 * 60 * 1000) : null;
+  await db
+    .update(users)
+    .set({ failedAttempts: attempts >= 5 ? 0 : attempts, lockedUntil })
+    .where(eq(users.id, user.id));
 }
 
-export function recordSuccessfulLogin(userId) {
-  db.prepare("UPDATE users SET failed_attempts = 0, locked_until = NULL, last_login_at = CURRENT_TIMESTAMP WHERE id = ?").run(userId);
+export async function recordSuccessfulLogin(userId) {
+  await db
+    .update(users)
+    .set({ failedAttempts: 0, lockedUntil: null, lastLoginAt: new Date() })
+    .where(eq(users.id, userId));
 }
 
-export function createSession(userId, token, remember, userAgent) {
-  db.prepare("DELETE FROM sessions WHERE expires_at < ?").run(Date.now());
+export async function createSession(tenantId, userId, token, remember, userAgent) {
+  await db.delete(sessions).where(lt(sessions.expiresAt, Date.now()));
   const csrf = newCsrfToken();
   const expiresAt = Date.now() + (remember ? 30 : 1) * 24 * 60 * 60 * 1000;
-  db.prepare("INSERT INTO sessions (token_hash, user_id, csrf_token, expires_at, user_agent) VALUES (?, ?, ?, ?, ?)").run(tokenHash(token), userId, csrf, expiresAt, String(userAgent || "").slice(0, 250));
+  await db.insert(sessions).values({
+    tenantId,
+    tokenHash: tokenHash(token),
+    userId,
+    csrfToken: csrf,
+    expiresAt,
+    userAgent: String(userAgent || "").slice(0, 250),
+  });
   return { csrf, expiresAt };
 }
 
-export function sessionUser(token) {
+export async function sessionUser(token) {
   if (!token) return null;
-  const row = db.prepare(`SELECT u.*, b.name AS branch_name, s.csrf_token, s.expires_at, s.id AS session_id
-    FROM sessions s JOIN users u ON u.id = s.user_id LEFT JOIN branches b ON b.id = u.branch_id
-    WHERE s.token_hash = ? AND s.expires_at > ? AND u.active = 1`).get(tokenHash(token), Date.now());
+  const [row] = await db
+    .select({
+      id: users.id,
+      tenantId: users.tenantId,
+      username: users.username,
+      displayName: users.displayName,
+      role: users.role,
+      mustChangePassword: users.mustChangePassword,
+      branchCode: branches.code,
+      branchName: branches.name,
+      csrf: sessions.csrfToken,
+      sessionId: sessions.id,
+    })
+    .from(sessions)
+    .innerJoin(users, eq(users.id, sessions.userId))
+    .leftJoin(branches, eq(branches.id, users.branchId))
+    .where(and(eq(sessions.tokenHash, tokenHash(token)), gt(sessions.expiresAt, Date.now()), eq(users.active, true)))
+    .limit(1);
   if (!row) return null;
-  return { ...publicUser(row), csrf: row.csrf_token, sessionId: row.session_id };
+  const overrides = await tenantRolePermissions(row.tenantId);
+  const permissions = resolvePermissions(row.role, overrides);
+  return { ...publicUser(row), permissions, csrf: row.csrf, sessionId: row.sessionId };
 }
 
-export function deleteSession(token) {
-  if (token) db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash(token));
+export async function deleteSession(token) {
+  if (token) await db.delete(sessions).where(eq(sessions.tokenHash, tokenHash(token)));
 }
 
-export function changePassword(userId, password) {
+export async function changePassword(user, password, ctx) {
   const credentials = hashPassword(password);
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("UPDATE users SET password_hash = ?, password_salt = ?, must_change_password = 0 WHERE id = ?").run(credentials.hash, credentials.salt, userId);
-    db.prepare("DELETE FROM sessions WHERE user_id = ?").run(userId);
-    db.prepare("INSERT INTO audit_events (actor_user_id, event_kind, description) VALUES (?, 'security', 'Password changed')").run(userId);
-    db.exec("COMMIT");
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  await db.transaction(async (tx) => {
+    await tx
+      .update(users)
+      .set({ passwordHash: credentials.hash, passwordSalt: credentials.salt, mustChangePassword: false })
+      .where(and(eq(users.id, user.id), eq(users.tenantId, user.tenantId)));
+    await tx.delete(sessions).where(eq(sessions.userId, user.id));
+    await writeAudit(tx, { tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "security", action: "security", entity: "user", entityId: user.username, description: "Password changed", ctx });
+  });
 }
+
+// ---------------------------------------------------------------------------
+// Password reset (admin-initiated + token-based, email-independent)
+// ---------------------------------------------------------------------------
+
+/** Admin resets another user's password to a supplied temporary value. */
+export async function adminResetPassword(actor, userId, tempPassword, ctx) {
+  const [target] = await db.select().from(users).where(and(eq(users.id, userId), eq(users.tenantId, actor.tenantId))).limit(1);
+  if (!target) throw new Error("User not found.");
+  const credentials = hashPassword(tempPassword);
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ passwordHash: credentials.hash, passwordSalt: credentials.salt, mustChangePassword: true, failedAttempts: 0, lockedUntil: null }).where(eq(users.id, userId));
+    await tx.delete(sessions).where(eq(sessions.userId, userId));
+    await writeAudit(tx, { tenantId: actor.tenantId, actorUserId: actor.id, actorName: actor.displayName, eventKind: "security", action: "security", entity: "user", entityId: target.username, description: `Password reset for ${target.username}`, ctx });
+  });
+  return { username: target.username };
+}
+
+/** Mint a reset token (returned once) the owner relays to the user out-of-band. */
+export async function createResetToken(tenantId, username) {
+  const user = await findUser(tenantId, username);
+  if (!user) return null; // do not reveal whether the account exists
+  const token = newSessionToken();
+  const expiresAt = Date.now() + 60 * 60 * 1000; // 1 hour
+  await db.insert(passwordResets).values({ tenantId, userId: user.id, tokenHash: tokenHash(token), expiresAt });
+  return { token, username: user.username };
+}
+
+export async function consumeResetToken(tenantId, token, newPassword, ctx) {
+  const [row] = await db.select().from(passwordResets)
+    .where(and(eq(passwordResets.tenantId, tenantId), eq(passwordResets.tokenHash, tokenHash(token)), gt(passwordResets.expiresAt, Date.now())))
+    .limit(1);
+  if (!row || row.usedAt) throw new Error("This reset link is invalid or has expired.");
+  const credentials = hashPassword(newPassword);
+  await db.transaction(async (tx) => {
+    await tx.update(users).set({ passwordHash: credentials.hash, passwordSalt: credentials.salt, mustChangePassword: false, failedAttempts: 0, lockedUntil: null }).where(eq(users.id, row.userId));
+    await tx.update(passwordResets).set({ usedAt: new Date() }).where(eq(passwordResets.id, row.id));
+    await tx.delete(sessions).where(eq(sessions.userId, row.userId));
+    await writeAudit(tx, { tenantId, actorUserId: row.userId, eventKind: "security", action: "security", entity: "user", description: "Password reset via token", ctx });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Read models (mapped to the frontend shape with readable ids)
+// ---------------------------------------------------------------------------
 
 function mapProduct(row) {
-  return { id: row.id, name: row.name, hindiName: row.hindi_name || "", short: row.short_code, category: row.category, baseRate: row.base_rate_paise / 100, stockKg: row.stock_grams / 1000 };
+  return {
+    id: row.displayId,
+    name: row.name,
+    hindiName: row.hindiName || "",
+    short: row.shortCode,
+    category: row.category,
+    baseRate: row.baseRatePaise / 100,
+    stockKg: row.stockGrams / 1000,
+  };
 }
 
 function mapParty(row) {
   return {
-    id: row.id,
+    id: row.displayId,
     name: row.name,
-    phone: row.phone_display,
+    phone: row.phoneDisplay,
     address: row.address,
-    bankAccount: decryptSensitive(row.bank_account_encrypted),
-    bankIfsc: row.bank_ifsc || "",
+    bankAccount: decryptSensitive(row.bankAccountEncrypted),
+    bankIfsc: row.bankIfsc || "",
     kind: row.kind,
-    balance: row.balance_paise / 100,
-    balanceType: row.balance_type,
+    balance: row.balancePaise / 100,
+    balanceType: row.balanceType,
   };
 }
 
-function transactionRows(user) {
-  const where = user.role === "biller" ? "WHERE b.branch_id = ?" : "";
-  const params = user.role === "biller" ? [user.branchId] : [];
-  return db.prepare(`SELECT b.*, p.name AS party_name, p.id AS party_code, p.phone_display AS party_phone,
-    p.address AS party_address, p.bank_account_encrypted AS party_bank_account, p.bank_ifsc AS party_bank_ifsc,
-    pr.name AS product_name, pr.hindi_name AS product_hindi_name, pr.id AS product_code,
-    bl.entered_quantity, bl.entered_unit, bl.weight_grams, bl.rate_paise_per_kg, bl.base_rate_paise_per_kg,
-    br.name AS branch_name, COALESCE(u.display_name, 'Imported record') AS creator_name
-    FROM bills b JOIN parties p ON p.id = b.party_id JOIN bill_lines bl ON bl.bill_id = b.id
-    JOIN products pr ON pr.id = bl.product_id JOIN branches br ON br.id = b.branch_id
-    LEFT JOIN users u ON u.id = b.created_by ${where} ORDER BY b.created_at DESC LIMIT 500`).all(...params);
+async function transactionRows(user) {
+  const conditions = [eq(bills.tenantId, user.tenantId)];
+  if (user.role === "biller") conditions.push(eq(branches.code, user.branchId));
+  return db
+    .select({
+      id: bills.displayId,
+      billType: bills.billType,
+      createdAt: bills.createdAt,
+      grossPaise: bills.grossPaise,
+      deductionPaise: bills.deductionPaise,
+      netPaise: bills.netPaise,
+      paidPaise: bills.paidPaise,
+      duePaise: bills.duePaise,
+      paymentMethod: bills.paymentMethod,
+      branchId: bills.branchId,
+      partyCode: parties.displayId,
+      partyName: parties.name,
+      partyPhone: parties.phoneDisplay,
+      partyAddress: parties.address,
+      partyBankAccount: parties.bankAccountEncrypted,
+      partyBankIfsc: parties.bankIfsc,
+      productCode: products.displayId,
+      productName: products.name,
+      productHindi: products.hindiName,
+      enteredQuantity: billLines.enteredQuantity,
+      enteredUnit: billLines.enteredUnit,
+      weightGrams: billLines.weightGrams,
+      ratePaisePerKg: billLines.ratePaisePerKg,
+      baseRatePaisePerKg: billLines.baseRatePaisePerKg,
+      branchName: branches.name,
+      branchCode: branches.code,
+      creatorName: users.displayName,
+    })
+    .from(bills)
+    .innerJoin(parties, eq(parties.id, bills.partyId))
+    .innerJoin(billLines, eq(billLines.billId, bills.id))
+    .innerJoin(products, eq(products.id, billLines.productId))
+    .innerJoin(branches, eq(branches.id, bills.branchId))
+    .leftJoin(users, eq(users.id, bills.createdBy))
+    .where(and(...conditions))
+    .orderBy(desc(bills.createdAt))
+    .limit(500);
 }
 
 function mapTransaction(row) {
   return {
-    id: row.id, type: row.bill_type, date: row.created_at, partyId: row.party_code, party: row.party_name,
-    partyPhone: row.party_phone, partyAddress: row.party_address, partyBankAccount: decryptSensitive(row.party_bank_account),
-    partyBankIfsc: row.party_bank_ifsc || "", productId: row.product_code, product: row.product_name, productHindi: row.product_hindi_name || "",
-    quantity: row.entered_quantity, unit: row.entered_unit,
-    totalKg: row.weight_grams / 1000, rate: row.rate_paise_per_kg / 100, baseRate: row.base_rate_paise_per_kg / 100,
-    gross: row.gross_paise / 100, cdDeduction: row.deduction_paise / 100, netAmount: row.net_paise / 100,
-    paidAmount: row.paid_paise / 100, dueAmount: row.due_paise / 100, paymentMethod: row.payment_method,
-    branch: row.branch_name, branchId: row.branch_id, createdBy: row.creator_name,
+    id: row.id,
+    type: row.billType,
+    date: row.createdAt,
+    partyId: row.partyCode,
+    party: row.partyName,
+    partyPhone: row.partyPhone,
+    partyAddress: row.partyAddress,
+    partyBankAccount: decryptSensitive(row.partyBankAccount),
+    partyBankIfsc: row.partyBankIfsc || "",
+    productId: row.productCode,
+    product: row.productName,
+    productHindi: row.productHindi || "",
+    quantity: row.enteredQuantity,
+    unit: row.enteredUnit,
+    totalKg: row.weightGrams / 1000,
+    rate: row.ratePaisePerKg / 100,
+    baseRate: row.baseRatePaisePerKg / 100,
+    gross: row.grossPaise / 100,
+    cdDeduction: row.deductionPaise / 100,
+    netAmount: row.netPaise / 100,
+    paidAmount: row.paidPaise / 100,
+    dueAmount: row.duePaise / 100,
+    paymentMethod: row.paymentMethod,
+    branch: row.branchName,
+    branchId: row.branchCode,
+    createdBy: row.creatorName || "Imported record",
   };
 }
 
-export function getBootstrap(user) {
-  const products = db.prepare("SELECT * FROM products WHERE active = 1 ORDER BY category, name").all().map(mapProduct);
-  const parties = db.prepare("SELECT * FROM parties ORDER BY name COLLATE NOCASE").all().map(mapParty);
-  const audits = db.prepare(`SELECT a.id, a.event_kind, a.description, a.metadata, a.created_at, u.display_name
-    FROM audit_events a LEFT JOIN users u ON u.id = a.actor_user_id ORDER BY a.created_at DESC LIMIT 200`).all().map((row) => ({
-    id: row.id, kind: row.event_kind, text: row.description, meta: row.metadata || row.display_name || "System", date: row.created_at,
-  }));
-  const branches = db.prepare("SELECT id, name FROM branches WHERE active = 1 ORDER BY name").all();
+export async function getBootstrap(user) {
+  const productRows = await db
+    .select()
+    .from(products)
+    .where(and(eq(products.tenantId, user.tenantId), eq(products.active, true)))
+    .orderBy(asc(products.category), sql`lower(${products.name})`);
+  const partyRows = await db
+    .select()
+    .from(parties)
+    .where(eq(parties.tenantId, user.tenantId))
+    .orderBy(sql`lower(${parties.name})`);
+  const auditRows = await db
+    .select({
+      id: auditEvents.id,
+      kind: auditEvents.eventKind,
+      text: auditEvents.description,
+      metadata: auditEvents.metadata,
+      createdAt: auditEvents.createdAt,
+      displayName: users.displayName,
+    })
+    .from(auditEvents)
+    .leftJoin(users, eq(users.id, auditEvents.actorUserId))
+    .where(eq(auditEvents.tenantId, user.tenantId))
+    .orderBy(desc(auditEvents.createdAt))
+    .limit(200);
+  const branchRows = await db
+    .select({ id: branches.code, name: branches.name })
+    .from(branches)
+    .where(and(eq(branches.tenantId, user.tenantId), eq(branches.active, true)))
+    .orderBy(asc(branches.name));
+  const transactions = (await transactionRows(user)).map(mapTransaction);
+  const settings = await getSettings(user.tenantId);
   return {
     user,
-    products,
-    parties,
-    transactions: transactionRows(user).map(mapTransaction),
-    audits,
-    branches,
+    products: productRows.map(mapProduct),
+    parties: partyRows.map(mapParty),
+    transactions,
+    audits: auditRows.map((row) => ({
+      id: row.id,
+      kind: row.kind,
+      text: row.text,
+      meta: row.metadata || row.displayName || "System",
+      date: row.createdAt,
+    })),
+    branches: branchRows,
+    settings,
+    permissionGroups: PERMISSION_GROUPS,
   };
 }
+
+// ---------------------------------------------------------------------------
+// Validation helpers (unchanged business rules)
+// ---------------------------------------------------------------------------
 
 function requireText(value, label, max = 160) {
   const text = String(value || "").trim();
@@ -390,27 +440,40 @@ function cleanIfsc(value) {
   return text;
 }
 
-function nextPartyId() {
-  const row = db.prepare("SELECT MAX(CAST(substr(id, 5) AS INTEGER)) AS value FROM parties WHERE id LIKE 'PTY-%'").get();
-  return `PTY-${String(Number(row.value || 1000) + 1).padStart(4, "0")}`;
+async function nextPartyId(executor, tenantId) {
+  const [row] = await executor
+    .select({ value: sql`max(cast(substr(${parties.displayId}, 5) as integer))` })
+    .from(parties)
+    .where(and(eq(parties.tenantId, tenantId), sql`${parties.displayId} like 'PTY-%'`));
+  return `PTY-${String(Number(row?.value || 1000) + 1).padStart(4, "0")}`;
 }
 
-function nextBillId(type, branchId) {
+async function nextBillId(executor, tenantId, type, branchCode) {
   const prefix = type === "sale" ? "SAL" : "PUR";
-  const branch = db.prepare("SELECT invoice_prefix FROM branches WHERE id = ?").get(branchId);
-  const row = db.prepare("SELECT MAX(CAST(substr(id, -4) AS INTEGER)) AS value FROM bills WHERE id LIKE ?").get(`${prefix}-${branch.invoice_prefix}-%`);
-  return `${prefix}-${branch.invoice_prefix}-${String(Number(row.value || 0) + 1).padStart(4, "0")}`;
+  const [branch] = await executor
+    .select({ invoicePrefix: branches.invoicePrefix })
+    .from(branches)
+    .where(and(eq(branches.tenantId, tenantId), eq(branches.code, branchCode)))
+    .limit(1);
+  const pattern = `${prefix}-${branch.invoicePrefix}-%`;
+  // Postgres substr() ignores negative offsets (unlike SQLite), so use right() for the last 4 digits.
+  const [row] = await executor
+    .select({ value: sql`max(cast(right(${bills.displayId}, 4) as integer))` })
+    .from(bills)
+    .where(and(eq(bills.tenantId, tenantId), sql`${bills.displayId} like ${pattern}`));
+  return `${prefix}-${branch.invoicePrefix}-${String(Number(row?.value || 0) + 1).padStart(4, "0")}`;
 }
 
-export function createBill(user, payload) {
-  if (!['admin', 'biller'].includes(user.role)) throw new Error("Your role cannot create bills.");
+// ---------------------------------------------------------------------------
+// Bill posting (single atomic transaction)
+// ---------------------------------------------------------------------------
+
+export async function createBill(user, payload, ctx) {
+  if (!["admin", "biller"].includes(user.role)) throw new Error("Your role cannot create bills.");
   const type = payload.type === "purchase" ? "purchase" : payload.type === "sale" ? "sale" : null;
   if (!type) throw new Error("Bill type is invalid.");
-  const branchId = user.role === "biller" ? user.branchId : requireText(payload.branchId, "Office", 30);
-  const branch = db.prepare("SELECT * FROM branches WHERE id = ? AND active = 1").get(branchId);
-  if (!branch) throw new Error("Office is invalid.");
-  const product = db.prepare("SELECT * FROM products WHERE id = ? AND active = 1").get(payload.productId);
-  if (!product) throw new Error("Product is invalid.");
+  const branchCode = user.role === "biller" ? user.branchId : requireText(payload.branchId, "Office", 30);
+
   const unitMultipliers = { kg: 1000, quintal: 100000, tonne: 1000000 };
   const quantity = Number(payload.quantity);
   const multiplier = unitMultipliers[payload.unit];
@@ -418,12 +481,17 @@ export function createBill(user, payload) {
   if (!Number.isFinite(quantity) || quantity <= 0 || !multiplier) throw new Error("Quantity and unit are invalid.");
   if (!Number.isSafeInteger(ratePaise) || ratePaise <= 0) throw new Error("Rate is invalid.");
   const weightGrams = Math.round(quantity * multiplier);
-  if (type === "sale" && product.stock_grams < weightGrams) throw new Error(`Insufficient stock. ${product.stock_grams / 1000} kg is available.`);
   const grossPaise = Math.round((weightGrams / 1000) * ratePaise);
-  const deductionPaise = type === "purchase" && payload.applyCd && grossPaise > 2000000 ? Math.round(grossPaise * 0.025) : 0;
+  // CD deduction rule is configurable in Settings, but still only applies when the
+  // biller manually enables it (payload.applyCd) on a purchase bill.
+  const cd = (await getSettings(user.tenantId)).cd || {};
+  const cdThresholdPaise = Math.round((cd.threshold ?? 20000) * 100);
+  const cdFactor = (cd.rate ?? 2.5) / 100;
+  const deductionPaise = type === "purchase" && payload.applyCd && cd.enabled !== false && grossPaise > cdThresholdPaise ? Math.round(grossPaise * cdFactor) : 0;
   const netPaise = grossPaise - deductionPaise;
   const paidPaise = Math.max(0, Math.min(netPaise, Math.round(Number(payload.paidAmount || 0) * 100)));
   const duePaise = netPaise - paidPaise;
+
   const partyInput = payload.party || {};
   const partyName = requireText(partyInput.name, "Party name", 100);
   const phoneDisplay = requireText(partyInput.phone, "Contact number", 30);
@@ -434,86 +502,389 @@ export function createBill(user, payload) {
   const bankIfsc = cleanIfsc(partyInput.bankIfsc);
   if ((bankAccount && !bankIfsc) || (!bankAccount && bankIfsc)) throw new Error("Enter both bank account number and IFSC, or leave both blank.");
   const encryptedBankAccount = encryptSensitive(bankAccount);
+  const paymentMethod = requireText(payload.paymentMethod, "Payment method", 40);
 
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    let party = partyInput.id ? db.prepare("SELECT * FROM parties WHERE id = ?").get(partyInput.id) : null;
-    if (!party) party = db.prepare("SELECT * FROM parties WHERE phone_normalized = ?").get(phoneNormalized);
+  let billDisplayId;
+  await db.transaction(async (tx) => {
+    const [branch] = await tx
+      .select()
+      .from(branches)
+      .where(and(eq(branches.tenantId, user.tenantId), eq(branches.code, branchCode), eq(branches.active, true)))
+      .limit(1);
+    if (!branch) throw new Error("Office is invalid.");
+
+    // Lock the product row so the stock check and decrement are concurrency-safe.
+    const [product] = await tx
+      .select()
+      .from(products)
+      .where(and(eq(products.tenantId, user.tenantId), eq(products.displayId, payload.productId), eq(products.active, true)))
+      .limit(1)
+      .for("update");
+    if (!product) throw new Error("Product is invalid.");
+    if (type === "sale" && product.stockGrams < weightGrams) throw new Error(`Insufficient stock. ${product.stockGrams / 1000} kg is available.`);
+
+    let party = null;
+    if (partyInput.id) {
+      [party] = await tx
+        .select()
+        .from(parties)
+        .where(and(eq(parties.tenantId, user.tenantId), eq(parties.displayId, partyInput.id)))
+        .limit(1);
+    }
     if (!party) {
-      const partyId = nextPartyId();
-      db.prepare("INSERT INTO parties (id, name, phone_normalized, phone_display, address, kind, bank_account_encrypted, bank_ifsc) VALUES (?, ?, ?, ?, ?, ?, ?, ?)").run(partyId, partyName, phoneNormalized, phoneDisplay, address, type === "sale" ? "customer" : "supplier", encryptedBankAccount, bankIfsc || null);
-      party = db.prepare("SELECT * FROM parties WHERE id = ?").get(partyId);
+      [party] = await tx
+        .select()
+        .from(parties)
+        .where(and(eq(parties.tenantId, user.tenantId), eq(parties.phoneNormalized, phoneNormalized)))
+        .limit(1);
+    }
+    if (!party) {
+      const partyDisplayId = await nextPartyId(tx, user.tenantId);
+      [party] = await tx
+        .insert(parties)
+        .values({
+          tenantId: user.tenantId,
+          displayId: partyDisplayId,
+          name: partyName,
+          phoneNormalized,
+          phoneDisplay,
+          address,
+          kind: type === "sale" ? "customer" : "supplier",
+          bankAccountEncrypted: encryptedBankAccount,
+          bankIfsc: bankIfsc || null,
+        })
+        .returning();
     } else {
       const kind = party.kind === (type === "sale" ? "supplier" : "customer") ? "both" : party.kind;
-      db.prepare("UPDATE parties SET name = ?, phone_normalized = ?, phone_display = ?, address = ?, kind = ?, bank_account_encrypted = ?, bank_ifsc = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(partyName, phoneNormalized, phoneDisplay, address, kind, encryptedBankAccount, bankIfsc || null, party.id);
+      await tx
+        .update(parties)
+        .set({
+          name: partyName,
+          phoneNormalized,
+          phoneDisplay,
+          address,
+          kind,
+          bankAccountEncrypted: encryptedBankAccount,
+          bankIfsc: bankIfsc || null,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(parties.id, party.id), eq(parties.tenantId, user.tenantId)));
     }
 
-    const billId = nextBillId(type, branchId);
-    db.prepare(`INSERT INTO bills (id, bill_type, party_id, branch_id, created_by, gross_paise, deduction_paise, net_paise, paid_paise, due_paise, payment_method)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(billId, type, party.id, branchId, user.id, grossPaise, deductionPaise, netPaise, paidPaise, duePaise, requireText(payload.paymentMethod, "Payment method", 40));
-    db.prepare(`INSERT INTO bill_lines (bill_id, product_id, entered_quantity, entered_unit, weight_grams, rate_paise_per_kg, base_rate_paise_per_kg, amount_paise)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)`).run(billId, product.id, quantity, payload.unit, weightGrams, ratePaise, product.base_rate_paise, grossPaise);
+    billDisplayId = await nextBillId(tx, user.tenantId, type, branchCode);
+    const [bill] = await tx
+      .insert(bills)
+      .values({
+        tenantId: user.tenantId,
+        displayId: billDisplayId,
+        billType: type,
+        partyId: party.id,
+        branchId: branch.id,
+        createdBy: user.id,
+        grossPaise,
+        deductionPaise,
+        netPaise,
+        paidPaise,
+        duePaise,
+        paymentMethod,
+      })
+      .returning({ id: bills.id });
+
+    await tx.insert(billLines).values({
+      tenantId: user.tenantId,
+      billId: bill.id,
+      productId: product.id,
+      enteredQuantity: quantity,
+      enteredUnit: payload.unit,
+      weightGrams,
+      ratePaisePerKg: ratePaise,
+      baseRatePaisePerKg: product.baseRatePaise,
+      amountPaise: grossPaise,
+    });
+
     const movement = type === "purchase" ? weightGrams : -weightGrams;
-    db.prepare("UPDATE products SET stock_grams = stock_grams + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(movement, product.id);
-    db.prepare("INSERT INTO stock_movements (bill_id, product_id, branch_id, quantity_grams, movement_type) VALUES (?, ?, ?, ?, ?)").run(billId, product.id, branchId, movement, type);
-    if (paidPaise > 0) db.prepare("INSERT INTO payments (bill_id, party_id, amount_paise, method) VALUES (?, ?, ?, ?)").run(billId, party.id, paidPaise, payload.paymentMethod);
+    await tx
+      .update(products)
+      .set({ stockGrams: sql`${products.stockGrams} + ${movement}`, updatedAt: new Date() })
+      .where(and(eq(products.id, product.id), eq(products.tenantId, user.tenantId)));
+    await tx.insert(stockMovements).values({
+      tenantId: user.tenantId,
+      billId: bill.id,
+      productId: product.id,
+      branchId: branch.id,
+      quantityGrams: movement,
+      balanceGrams: product.stockGrams + movement,
+      movementType: type,
+      actorUserId: user.id,
+    });
+
+    if (paidPaise > 0) {
+      await tx.insert(payments).values({
+        tenantId: user.tenantId,
+        billId: bill.id,
+        partyId: party.id,
+        amountPaise: paidPaise,
+        method: paymentMethod,
+      });
+    }
+
     if (duePaise > 0) {
       const balanceType = type === "purchase" ? "creditor" : "debtor";
-      db.prepare("UPDATE parties SET balance_paise = balance_paise + ?, balance_type = ? WHERE id = ?").run(duePaise, balanceType, party.id);
-      db.prepare("INSERT INTO ledger_entries (bill_id, party_id, entry_type, amount_paise) VALUES (?, ?, ?, ?)").run(billId, party.id, balanceType, duePaise);
+      await tx
+        .update(parties)
+        .set({ balancePaise: sql`${parties.balancePaise} + ${duePaise}`, balanceType })
+        .where(and(eq(parties.id, party.id), eq(parties.tenantId, user.tenantId)));
+      await tx.insert(ledgerEntries).values({
+        tenantId: user.tenantId,
+        billId: bill.id,
+        partyId: party.id,
+        entryType: balanceType,
+        amountPaise: duePaise,
+      });
     }
-    if (ratePaise !== product.base_rate_paise) {
-      const text = `${product.name} rate changed from INR ${(product.base_rate_paise / 100).toFixed(2)} to INR ${(ratePaise / 100).toFixed(2)}`;
-      db.prepare("INSERT INTO audit_events (actor_user_id, event_kind, description, metadata) VALUES (?, 'override', ?, ?)").run(user.id, text, `${partyName} · ${billId}`);
+
+    if (ratePaise !== product.baseRatePaise) {
+      await writeAudit(tx, {
+        tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "override",
+        action: "update", entity: "product", entityId: product.displayId,
+        oldValue: (product.baseRatePaise / 100).toFixed(2), newValue: (ratePaise / 100).toFixed(2),
+        description: `${product.name} rate changed from INR ${(product.baseRatePaise / 100).toFixed(2)} to INR ${(ratePaise / 100).toFixed(2)}`,
+        metadata: `${partyName} · ${billDisplayId}`, ctx,
+      });
     }
-    db.prepare("INSERT INTO audit_events (actor_user_id, event_kind, description, metadata) VALUES (?, 'bill', ?, ?)").run(user.id, `${type === "sale" ? "Sale" : "Purchase"} bill ${billId} posted`, `${partyName} · ${branch.name}`);
-    db.exec("COMMIT");
-    const freshUser = { ...user };
-    const data = getBootstrap(freshUser);
-    return { bill: data.transactions.find((item) => item.id === billId), data };
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "bill",
+      action: "create", entity: "bill", entityId: billDisplayId, newValue: (netPaise / 100).toFixed(2),
+      description: `${type === "sale" ? "Sale" : "Purchase"} bill ${billDisplayId} posted`,
+      metadata: `${partyName} · ${branch.name}`, ctx,
+    });
+  });
+
+  const data = await getBootstrap(user);
+  return { bill: data.transactions.find((item) => item.id === billDisplayId), data };
 }
 
-export function updateRate(user, productId, rate) {
-  if (!['admin', 'manager'].includes(user.role)) throw new Error("Only admins and managers can change base rates.");
-  const product = db.prepare("SELECT * FROM products WHERE id = ?").get(productId);
+export async function updateRate(user, productId, rate, ctx) {
+  if (!["admin", "manager"].includes(user.role)) throw new Error("Only admins and managers can change base rates.");
   const ratePaise = Math.round(Number(rate) * 100);
-  if (!product || !Number.isSafeInteger(ratePaise) || ratePaise <= 0) throw new Error("Product or rate is invalid.");
-  db.exec("BEGIN IMMEDIATE");
-  try {
-    db.prepare("UPDATE products SET base_rate_paise = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(ratePaise, productId);
-    db.prepare("INSERT INTO audit_events (actor_user_id, event_kind, description, metadata) VALUES (?, 'base-rate', ?, ?)").run(user.id, `${product.name} base rate updated from INR ${(product.base_rate_paise / 100).toFixed(2)} to INR ${(ratePaise / 100).toFixed(2)}`, user.displayName);
-    db.exec("COMMIT");
-    return getBootstrap(user);
-  } catch (error) {
-    db.exec("ROLLBACK");
-    throw error;
-  }
+  if (!Number.isSafeInteger(ratePaise) || ratePaise <= 0) throw new Error("Product or rate is invalid.");
+  await db.transaction(async (tx) => {
+    const [product] = await tx
+      .select()
+      .from(products)
+      .where(and(eq(products.tenantId, user.tenantId), eq(products.displayId, productId)))
+      .limit(1)
+      .for("update");
+    if (!product) throw new Error("Product or rate is invalid.");
+    await tx
+      .update(products)
+      .set({ baseRatePaise: ratePaise, updatedAt: new Date() })
+      .where(and(eq(products.id, product.id), eq(products.tenantId, user.tenantId)));
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "base-rate",
+      action: "update", entity: "product", entityId: product.displayId,
+      oldValue: (product.baseRatePaise / 100).toFixed(2), newValue: (ratePaise / 100).toFixed(2),
+      description: `${product.name} base rate updated from INR ${(product.baseRatePaise / 100).toFixed(2)} to INR ${(ratePaise / 100).toFixed(2)}`,
+      metadata: user.displayName, ctx,
+    });
+  });
+  return getBootstrap(user);
 }
 
-export function listUsers(user) {
-  if (user.role !== "admin") throw new Error("Only admins can manage users.");
-  return db.prepare(`SELECT u.id, u.username, u.display_name, u.role, u.active, u.must_change_password, u.last_login_at, b.name AS branch_name, u.branch_id
-    FROM users u LEFT JOIN branches b ON b.id = u.branch_id ORDER BY u.created_at`).all().map((row) => ({
-    id: row.id, username: row.username, displayName: row.display_name, role: row.role, active: Boolean(row.active), mustChangePassword: Boolean(row.must_change_password), lastLoginAt: row.last_login_at, branch: row.branch_name, branchId: row.branch_id,
+// ---------------------------------------------------------------------------
+// Inventory operations (adjustments, transfers, movement history)
+// ---------------------------------------------------------------------------
+
+/** Adjust a product's stock by a signed number of kilograms. Negative stock is blocked. */
+export async function adjustStock(user, payload, ctx) {
+  if (!["admin", "manager"].includes(user.role)) throw new Error("Only admins and managers can adjust stock.");
+  const deltaGrams = Math.round(Number(payload.deltaKg) * 1000);
+  if (!Number.isFinite(deltaGrams) || deltaGrams === 0) throw new Error("Enter a non-zero adjustment quantity.");
+  const note = optionalText(payload.note, "Note", 240);
+  const branchCode = requireText(payload.branchId, "Branch", 30);
+  await db.transaction(async (tx) => {
+    const [branch] = await tx.select().from(branches).where(and(eq(branches.tenantId, user.tenantId), eq(branches.code, branchCode))).limit(1);
+    if (!branch) throw new Error("Branch is invalid.");
+    const [product] = await tx.select().from(products).where(and(eq(products.tenantId, user.tenantId), eq(products.displayId, payload.productId))).limit(1).for("update");
+    if (!product) throw new Error("Product is invalid.");
+    const nextGrams = product.stockGrams + deltaGrams;
+    if (nextGrams < 0) throw new Error(`Adjustment would make stock negative. ${product.stockGrams / 1000} kg available.`);
+    await tx.update(products).set({ stockGrams: nextGrams, updatedAt: new Date() }).where(eq(products.id, product.id));
+    await tx.insert(stockMovements).values({
+      tenantId: user.tenantId, productId: product.id, branchId: branch.id, quantityGrams: deltaGrams,
+      balanceGrams: nextGrams, movementType: "adjustment", note: note || null, actorUserId: user.id,
+    });
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "inventory",
+      action: "update", entity: "product", entityId: product.displayId,
+      oldValue: `${product.stockGrams / 1000} kg`, newValue: `${nextGrams / 1000} kg`,
+      description: `Stock adjusted for ${product.name} by ${deltaGrams / 1000} kg${note ? ` — ${note}` : ""}`,
+      metadata: branch.name, ctx,
+    });
+  });
+  return getBootstrap(user);
+}
+
+/** Record a stock transfer between two branches (attribution movements). */
+export async function transferStock(user, payload, ctx) {
+  if (!["admin", "manager"].includes(user.role)) throw new Error("Only admins and managers can transfer stock.");
+  const qtyGrams = Math.round(Number(payload.qtyKg) * 1000);
+  if (!Number.isFinite(qtyGrams) || qtyGrams <= 0) throw new Error("Enter a valid transfer quantity.");
+  const note = optionalText(payload.note, "Note", 240);
+  const fromCode = requireText(payload.fromBranchId, "Source branch", 30);
+  const toCode = requireText(payload.toBranchId, "Destination branch", 30);
+  if (fromCode === toCode) throw new Error("Source and destination branches must differ.");
+  await db.transaction(async (tx) => {
+    const [from] = await tx.select().from(branches).where(and(eq(branches.tenantId, user.tenantId), eq(branches.code, fromCode))).limit(1);
+    const [to] = await tx.select().from(branches).where(and(eq(branches.tenantId, user.tenantId), eq(branches.code, toCode))).limit(1);
+    if (!from || !to) throw new Error("Branch is invalid.");
+    const [product] = await tx.select().from(products).where(and(eq(products.tenantId, user.tenantId), eq(products.displayId, payload.productId))).limit(1);
+    if (!product) throw new Error("Product is invalid.");
+    await tx.insert(stockMovements).values([
+      { tenantId: user.tenantId, productId: product.id, branchId: from.id, quantityGrams: -qtyGrams, balanceGrams: product.stockGrams, movementType: "transfer-out", note: note || null, actorUserId: user.id },
+      { tenantId: user.tenantId, productId: product.id, branchId: to.id, quantityGrams: qtyGrams, balanceGrams: product.stockGrams, movementType: "transfer-in", note: note || null, actorUserId: user.id },
+    ]);
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "inventory",
+      action: "transfer", entity: "product", entityId: product.displayId,
+      description: `Transferred ${qtyGrams / 1000} kg of ${product.name} from ${from.name} to ${to.name}${note ? ` — ${note}` : ""}`,
+      metadata: `${from.name} → ${to.name}`, ctx,
+    });
+  });
+  return getBootstrap(user);
+}
+
+export async function listStockMovements(user, filters = {}) {
+  const conditions = [eq(stockMovements.tenantId, user.tenantId)];
+  const rows = await db
+    .select({
+      id: stockMovements.id, createdAt: stockMovements.createdAt, quantityGrams: stockMovements.quantityGrams,
+      balanceGrams: stockMovements.balanceGrams, movementType: stockMovements.movementType, note: stockMovements.note,
+      productName: products.name, productCode: products.displayId, branchName: branches.name, billId: bills.displayId, actor: users.displayName,
+    })
+    .from(stockMovements)
+    .innerJoin(products, eq(products.id, stockMovements.productId))
+    .leftJoin(branches, eq(branches.id, stockMovements.branchId))
+    .leftJoin(bills, eq(bills.id, stockMovements.billId))
+    .leftJoin(users, eq(users.id, stockMovements.actorUserId))
+    .where(and(...conditions))
+    .orderBy(desc(stockMovements.createdAt))
+    .limit(Number(filters.limit) || 500);
+  return rows.map((r) => ({
+    id: r.id, date: r.createdAt, type: r.movementType, quantityKg: r.quantityGrams / 1000,
+    balanceKg: r.balanceGrams == null ? null : r.balanceGrams / 1000, note: r.note || "",
+    product: r.productName, productId: r.productCode, branch: r.branchName || "—", bill: r.billId || "", actor: r.actor || "System",
   }));
 }
 
-export function createUser(actor, input) {
+export async function listAudit(user, filters = {}) {
+  const rows = await db
+    .select({
+      id: auditEvents.id, createdAt: auditEvents.createdAt, kind: auditEvents.eventKind, action: auditEvents.action,
+      entity: auditEvents.entity, entityId: auditEvents.entityId, description: auditEvents.description,
+      oldValue: auditEvents.oldValue, newValue: auditEvents.newValue, metadata: auditEvents.metadata,
+      ip: auditEvents.ipAddress, device: auditEvents.device, actorName: auditEvents.actorName, displayName: users.displayName,
+    })
+    .from(auditEvents)
+    .leftJoin(users, eq(users.id, auditEvents.actorUserId))
+    .where(eq(auditEvents.tenantId, user.tenantId))
+    .orderBy(desc(auditEvents.createdAt))
+    .limit(Number(filters.limit) || 500);
+  return rows.map((r) => ({
+    id: r.id, date: r.createdAt, kind: r.kind, action: r.action || r.kind, entity: r.entity || "", entityId: r.entityId || "",
+    text: r.description, oldValue: r.oldValue || "", newValue: r.newValue || "", meta: r.metadata || "",
+    ip: r.ip || "", device: r.device || "", actor: r.actorName || r.displayName || "System",
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// User administration
+// ---------------------------------------------------------------------------
+
+export async function listUsers(user) {
+  if (user.role !== "admin") throw new Error("Only admins can manage users.");
+  const rows = await db
+    .select({
+      id: users.id,
+      username: users.username,
+      displayName: users.displayName,
+      role: users.role,
+      active: users.active,
+      mustChangePassword: users.mustChangePassword,
+      lastLoginAt: users.lastLoginAt,
+      branchName: branches.name,
+      branchCode: branches.code,
+      createdAt: users.createdAt,
+    })
+    .from(users)
+    .leftJoin(branches, eq(branches.id, users.branchId))
+    .where(eq(users.tenantId, user.tenantId))
+    .orderBy(asc(users.createdAt));
+  return rows.map((row) => ({
+    id: row.id,
+    username: row.username,
+    displayName: row.displayName,
+    role: row.role,
+    active: Boolean(row.active),
+    mustChangePassword: Boolean(row.mustChangePassword),
+    lastLoginAt: row.lastLoginAt,
+    branch: row.branchName,
+    branchId: row.branchCode,
+  }));
+}
+
+export async function createUser(actor, input, ctx) {
   if (actor.role !== "admin") throw new Error("Only admins can create users.");
   const username = requireText(input.username, "Username", 50).toLowerCase();
   if (!/^[a-z0-9._-]+$/.test(username)) throw new Error("Username may contain letters, numbers, dots, dashes and underscores.");
   const displayName = requireText(input.displayName, "Display name", 100);
-  const role = ['admin', 'manager', 'biller'].includes(input.role) ? input.role : null;
+  const role = ["admin", "manager", "biller"].includes(input.role) ? input.role : null;
   if (!role) throw new Error("Role is invalid.");
-  const branchId = role === "biller" ? requireText(input.branchId, "Office", 30) : null;
+  let branchId = null;
+  if (role === "biller") {
+    const branchCode = requireText(input.branchId, "Office", 30);
+    const [branch] = await db
+      .select({ id: branches.id })
+      .from(branches)
+      .where(and(eq(branches.tenantId, actor.tenantId), eq(branches.code, branchCode)))
+      .limit(1);
+    if (!branch) throw new Error("Office is invalid.");
+    branchId = branch.id;
+  }
   const credentials = hashPassword(input.password);
-  const result = db.prepare("INSERT INTO users (username, display_name, password_hash, password_salt, role, branch_id) VALUES (?, ?, ?, ?, ?, ?)").run(username, displayName, credentials.hash, credentials.salt, role, branchId);
-  db.prepare("INSERT INTO audit_events (actor_user_id, event_kind, description, metadata) VALUES (?, 'security', ?, ?)").run(actor.id, `User ${username} created`, role);
-  return result.lastInsertRowid;
+  const [created] = await db
+    .insert(users)
+    .values({
+      tenantId: actor.tenantId,
+      username,
+      displayName,
+      passwordHash: credentials.hash,
+      passwordSalt: credentials.salt,
+      role,
+      branchId,
+    })
+    .returning({ id: users.id });
+  await writeAudit(db, {
+    tenantId: actor.tenantId, actorUserId: actor.id, actorName: actor.displayName, eventKind: "security",
+    action: "create", entity: "user", entityId: username, newValue: role,
+    description: `User ${username} created`, metadata: role, ctx,
+  });
+  return created.id;
+}
+
+export async function setUserActive(actor, userId, active, ctx) {
+  if (actor.role !== "admin") throw new Error("Only admins can manage users.");
+  const [target] = await db.select().from(users).where(and(eq(users.id, userId), eq(users.tenantId, actor.tenantId))).limit(1);
+  if (!target) throw new Error("User not found.");
+  if (target.id === actor.id) throw new Error("You cannot deactivate your own account.");
+  await db.update(users).set({ active: Boolean(active) }).where(eq(users.id, userId));
+  if (!active) await db.delete(sessions).where(eq(sessions.userId, userId));
+  await writeAudit(db, {
+    tenantId: actor.tenantId, actorUserId: actor.id, actorName: actor.displayName, eventKind: "security",
+    action: "update", entity: "user", entityId: target.username, newValue: active ? "active" : "inactive",
+    description: `User ${target.username} ${active ? "activated" : "deactivated"}`, ctx,
+  });
+  return listUsers(actor);
 }
 
 export { publicUser };

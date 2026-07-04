@@ -14,29 +14,44 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "start": "node server/index.js",
-    "db:init": "node server/init-db.js"
+    "db:push": "drizzle-kit push --force",
+    "db:generate": "drizzle-kit generate",
+    "db:seed": "tsx server/seed.js",
+    "db:init": "npm run db:push && npm run db:seed"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@tailwindcss/vite": "^4.3.0",
+    "docx": "^9.7.1",
+    "dotenv": "^17.4.2",
+    "drizzle-orm": "^0.45.2",
     "framer-motion": "^12.38.0",
     "jiti": "^2.7.0",
+    "jsbarcode": "^3.12.3",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
+    "pg": "^8.22.0",
+    "qrcode": "^1.5.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "react-icons": "^5.6.0",
+    "react-router-dom": "^7.18.1",
     "tailwindcss": "^4.3.0",
-    "uuid": "^14.0.0"
+    "uuid": "^14.0.0",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^10.3.0",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",
     "globals": "^17.6.0",
+    "tsx": "^4.22.5",
     "vite": "^5.4.21"
   }
 }
