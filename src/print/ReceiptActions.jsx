@@ -45,9 +45,14 @@ export function ReceiptActions({ invoice }) {
         <Button variant="ghost" size="sm" icon={FiPrinter} disabled={!!busy} onClick={withBusy("tp", async () => { const r = await genReceipt(); printReceiptImage(r.dataUrl, r.widthMm); })}>Thermal print</Button>
         <Button variant="ghost" size="sm" icon={FiImage} disabled={!!busy} onClick={withBusy("png", async () => { const r = await genReceipt(); downloadReceipt(r.dataUrl, invoice.id); })}>Save PNG</Button>
         <Button variant="ghost" size="sm" icon={FiDownload} disabled={!!busy} onClick={withBusy("tpdf", async () => { const r = await genReceipt(); await receiptPdf(r.dataUrl, invoice.id, r.widthMm, r.height, r.width); })}>Thermal PDF</Button>
-        <Button variant="primary" size="sm" icon={FiShare2} disabled={!!busy} onClick={withBusy("wa", async () => { const r = await genReceipt(); await shareReceipt(r.dataUrl, invoice.id, caption(), settings.notifications?.whatsapp?.ownerNumber); })}>WhatsApp</Button>
+        <Button variant="primary" size="sm" icon={FiShare2} disabled={!!busy} onClick={withBusy("wa", async () => {
+          const r = await genReceipt();
+          const name = `${invoice.type === "sale" ? "sale" : "purchase"}-bill-${invoice.id}`;
+          const shared = await shareReceipt(r.dataUrl, name, caption(), settings.notifications?.whatsapp?.ownerNumber);
+          toast(shared ? "Bill image ready to send on WhatsApp" : "Bill image downloaded — attach it in the WhatsApp chat that opened", shared ? "success" : "info");
+        })}>WhatsApp</Button>
       </div>
-      <p className="text-[11px] text-muted">Thermal receipts are rendered as a 300&nbsp;DPI image — crisp on any 58/80&nbsp;mm printer, no layout glitches.</p>
+      <p className="text-[11px] text-muted">Receipts render as a 300&nbsp;DPI image — {invoice.type === "sale" ? "rose for sales" : "amber for purchases"}, crisp on any 58/80&nbsp;mm printer, and shared to WhatsApp as the actual bill picture.</p>
     </div>
   );
 }

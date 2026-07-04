@@ -1,8 +1,9 @@
 import { useMemo, useRef, useState } from "react";
 import {
-  FiArrowDownLeft, FiArrowUpRight, FiCheckCircle, FiCreditCard, FiMapPin, FiPackage,
-  FiPhone, FiPrinter, FiSave, FiSearch, FiUser, FiMaximize2, FiMinimize2,
+  FiArrowDownLeft, FiArrowUpRight, FiCheck, FiCheckCircle, FiCreditCard, FiMapPin, FiPackage,
+  FiPhone, FiPrinter, FiSave, FiSearch, FiUser,
 } from "react-icons/fi";
+import { TbCalculator } from "react-icons/tb";
 import { useApp } from "../context/AppContext";
 import { Badge, Button, Field, Modal, cx } from "../ui";
 import { PAYMENT_METHODS, UNITS, inr2, kgPerUnit, num, productLabel, initials } from "../lib/format";
@@ -43,7 +44,11 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
   const gross = totalKg * Number(rate || 0);
   const deduction = type === "purchase" && applyCd && gross > 20000 ? gross * 0.025 : 0;
   const net = gross - deduction;
-  const due = Math.max(0, net - Number(paidAmount || 0));
+  const paidNow = Number(paidAmount || 0);
+  const due = Math.max(0, net - paidNow);
+  // Overpayment guard: compare in paise to avoid float noise. There is no advance/credit
+  // facility, so paying more than the bill total is blocked (both here and on the server).
+  const overpaid = Math.round(paidNow * 100) > Math.round(net * 100);
   const isOverride = product && Number(rate) !== product.baseRate;
 
   const matches = useMemo(() => {
@@ -95,6 +100,11 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
     if (!quantity || Number(quantity) <= 0) return setError("Enter a valid grain quantity.");
     if (!rate || Number(rate) <= 0) return setError("Enter a valid rate per kg.");
     if (type === "sale" && totalKg > product.stockKg) return setError(`Insufficient stock — ${num.format(product.stockKg)} kg available.`);
+    if (overpaid) {
+      const message = "Entered amount exceeds the total bill amount.";
+      toast(message, "danger");
+      return setError(message);
+    }
     setSaving(true);
     printRef.current = print;
     try {
@@ -130,8 +140,8 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
           ) : <span className="mr-auto" />}
           <div className="flex items-center gap-2">
             <Button variant="ghost" onClick={onClose}>Cancel</Button>
-            <Button variant="ghost" icon={FiPrinter} onClick={() => submit(true)} disabled={saving}>Save &amp; print</Button>
-            <Button variant="primary" icon={FiSave} onClick={() => submit(false)} disabled={saving}>{saving ? "Saving…" : "Save bill"}</Button>
+            <Button variant="ghost" icon={FiPrinter} onClick={() => submit(true)} disabled={saving || overpaid}>Save &amp; print</Button>
+            <Button variant="primary" icon={FiSave} onClick={() => submit(false)} disabled={saving || overpaid}>{saving ? "Saving…" : "Save bill"}</Button>
           </div>
         </div>
       }>
@@ -237,18 +247,25 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
             <SectionLabel n="03" title="Rate & payment" hint="Review the rate and record any payment made now" />
             <div className="grid sm:grid-cols-3 gap-3">
               <Field label="Rate per kg *" error={undefined}>
-                <div className={cx("flex items-center input p-0 overflow-hidden", isOverride && "border-warning")}>
+                <div className={cx("input input-affix", isOverride && "border-warning")}>
                   <span className="px-3 text-muted">₹</span>
-                  <input value={rate} onChange={(e) => setRate(e.target.value)} type="number" min="0" step="0.01" className="grow bg-transparent outline-none h-full px-0" />
+                  <input value={rate} onChange={(e) => setRate(e.target.value)} type="number" min="0" step="0.01" className="grow outline-none h-full px-0" />
                 </div>
                 <span className={cx("block text-xs mt-1", isOverride ? "text-warning" : "text-muted")}>{isOverride ? `Override · base ${inr2.format(product.baseRate)}` : "Today's base rate"}</span>
               </Field>
               <Field label="Payment method">
                 <select value={paymentMethod} onChange={(e) => setPaymentMethod(e.target.value)} className="input">{PAYMENT_METHODS.map((m) => <option key={m}>{m}</option>)}</select>
               </Field>
-              <Field label="Amount paid now">
-                <div className="flex items-center input p-0 overflow-hidden"><span className="px-3 text-muted">₹</span>
-                  <input value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)} type="number" min="0" step="0.01" placeholder="0.00" className="grow bg-transparent outline-none h-full px-0" /></div>
+              <Field label="Amount paid now" error={overpaid ? "Exceeds the bill total." : undefined}>
+                <div className={cx("input input-affix", overpaid && "border-danger")}>
+                  <span className="px-3 text-muted">₹</span>
+                  <input value={paidAmount} onChange={(e) => setPaidAmount(e.target.value)} type="number" min="0" step="0.01" placeholder="0.00" className="grow outline-none h-full px-0" />
+                  <button type="button" onClick={() => net > 0 && setPaidAmount(net.toFixed(2))} disabled={net <= 0}
+                    title="Pay full amount" aria-label="Fill in the full bill amount"
+                    className="shrink-0 grid place-items-center self-stretch px-3 text-brand border-l border-line hover:bg-surface-3 disabled:opacity-40 disabled:hover:bg-transparent">
+                    <FiCheck />
+                  </button>
+                </div>
               </Field>
             </div>
             {!isBiller && (
@@ -279,7 +296,7 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
             </dl>
             <p className="text-xs text-muted mt-3 flex items-center gap-1.5"><FiCreditCard /> Unpaid amounts post to the party ledger.</p>
             <button type="button" onClick={() => setShowCalc((s) => !s)} className="btn btn-ghost btn-sm w-full mt-3">
-              {showCalc ? <FiMinimize2 /> : <FiMaximize2 />} {showCalc ? "Hide" : "Show"} calculator
+              <TbCalculator className="text-[1.05em]" /> {showCalc ? "Hide" : "Show"} calculator
             </button>
             <p className="hidden lg:block text-xs text-muted mt-2">Tip: <span className="kbd">⌘</span> <span className="kbd">↵</span> to save · scan a product barcode to select it.</p>
           </div>

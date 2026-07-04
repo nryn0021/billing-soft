@@ -2,16 +2,17 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
-  FiBarChart2, FiBell, FiChevronLeft, FiChevronRight, FiCommand, FiFileText, FiGrid, FiHome,
-  FiLogOut, FiMenu, FiPackage, FiPlus, FiSearch, FiSettings, FiShield, FiSliders, FiUserCheck, FiUsers, FiX,
-  FiArrowDownLeft, FiArrowUpRight, FiCornerDownLeft,
+  FiBarChart2, FiBell, FiCheck, FiChevronLeft, FiChevronRight, FiCommand, FiFileText, FiGrid, FiHome,
+  FiInfo, FiLock, FiLogOut, FiMenu, FiPackage, FiPlus, FiSearch, FiSettings, FiShield, FiSliders,
+  FiUser, FiUserCheck, FiUsers, FiX, FiArrowDownLeft, FiArrowUpRight, FiChevronDown, FiCornerDownLeft,
 } from "react-icons/fi";
+import { api } from "../../api";
 import { useApp } from "../../context/AppContext";
 import { useHotkeys, useLocalStorage, useMediaQuery } from "../../lib/hooks";
-import { Avatar, IconButton, ThemeToggle, cx } from "../../ui";
+import { Avatar, Badge, Button, Field, IconButton, Modal, ThemeToggle, cx } from "../../ui";
 import { BillComposer } from "../../billing/BillComposer";
 import { PrintInvoice } from "../../print/Invoice";
-import { inr, txProductLabel } from "../../lib/format";
+import { inr, titleCase, txProductLabel } from "../../lib/format";
 
 // Nav is permission-driven: each item is shown only if the user holds `perm`.
 const NAV = [
@@ -185,10 +186,135 @@ function Topbar({ title, subtitle, user, branch, setBranch, branches, isBiller, 
           <ThemeToggle />
           <IconButton icon={FiBell} label="Notifications" className="relative hidden sm:inline-flex" />
           {canBill && <button onClick={() => onNewBill("sale")} className="btn btn-primary btn-sm hidden lg:inline-flex"><FiPlus />New bill</button>}
-          <Avatar name={user.displayName} className="size-9" />
+          <UserMenu user={user} />
         </div>
       </div>
     </header>
+  );
+}
+
+/* ------------------------------ User account menu ------------------------------ */
+function UserMenu({ user }) {
+  const { logout } = useApp();
+  const [open, setOpen] = useState(false);
+  const [modal, setModal] = useState(null); // "account" | "password"
+  const isBiller = user.role === "biller";
+
+  const items = [
+    { label: "My account", icon: FiUser, run: () => setModal("account") },
+    { label: "Account details", icon: FiInfo, run: () => setModal("account") },
+    { label: "Change password", icon: FiLock, run: () => setModal("password") },
+  ];
+
+  return (
+    <div className="relative">
+      <button onClick={() => setOpen((o) => !o)} aria-haspopup="menu" aria-expanded={open} aria-label="Account menu"
+        className="flex items-center gap-1.5 rounded-xl pl-0.5 pr-1 py-0.5 hover:bg-surface-2 transition-colors">
+        <Avatar name={user.displayName} className="size-9" />
+        <FiChevronDown className={cx("text-muted transition-transform hidden sm:block", open && "rotate-180")} />
+      </button>
+
+      <AnimatePresence>
+        {open && (
+          <>
+            <button className="fixed inset-0 z-40" aria-label="Close menu" onClick={() => setOpen(false)} />
+            <motion.div role="menu" initial={{ opacity: 0, y: -6, scale: 0.98 }} animate={{ opacity: 1, y: 0, scale: 1 }} exit={{ opacity: 0, y: -6, scale: 0.98 }}
+              transition={{ type: "spring", stiffness: 420, damping: 30 }}
+              className="absolute right-0 mt-2 z-50 w-64 card p-1.5 shadow-pop origin-top-right">
+              <div className="flex items-center gap-3 px-2.5 py-2.5">
+                <Avatar name={user.displayName} className="size-10 text-sm" />
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-ink truncate">{user.displayName}</p>
+                  <p className="text-xs text-muted truncate">@{user.username}</p>
+                </div>
+              </div>
+              <div className="px-2.5 pb-2">
+                <Badge className="capitalize">{titleCase(user.role)}{isBiller && user.branch ? ` · ${user.branch}` : ""}</Badge>
+              </div>
+              <div className="border-t border-line pt-1">
+                {items.map(({ label, icon: Icon, run }) => (
+                  <button key={label} role="menuitem" onClick={() => { setOpen(false); run(); }}
+                    className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors">
+                    <Icon className="text-base shrink-0" />{label}
+                  </button>
+                ))}
+              </div>
+              <div className="border-t border-line mt-1 pt-1">
+                <button role="menuitem" onClick={() => { setOpen(false); logout(); }}
+                  className="w-full flex items-center gap-2.5 px-2.5 py-2 rounded-lg text-sm font-medium text-danger hover:bg-danger/10 transition-colors">
+                  <FiLogOut className="text-base shrink-0" />Sign out
+                </button>
+              </div>
+            </motion.div>
+          </>
+        )}
+      </AnimatePresence>
+
+      <AccountModal open={modal === "account"} onClose={() => setModal(null)} user={user} onChangePassword={() => setModal("password")} />
+      <ChangePasswordModal open={modal === "password"} onClose={() => setModal(null)} />
+    </div>
+  );
+}
+
+function AccountModal({ open, onClose, user, onChangePassword }) {
+  const rows = [
+    ["Full name", user.displayName],
+    ["Username", `@${user.username}`],
+    ["Role", titleCase(user.role)],
+    ["Branch", user.branch || "All branches"],
+  ];
+  return (
+    <Modal open={open} onClose={onClose} size="sm" title="My account" subtitle="Your profile and access level">
+      <div className="flex items-center gap-3 mb-4">
+        <Avatar name={user.displayName} className="size-12 text-base" />
+        <div className="min-w-0">
+          <p className="font-semibold text-ink truncate">{user.displayName}</p>
+          <Badge className="capitalize mt-1">{titleCase(user.role)}</Badge>
+        </div>
+      </div>
+      <div className="rounded-xl border border-line divide-y divide-line">
+        {rows.map(([k, v]) => (
+          <div key={k} className="flex items-center justify-between px-4 py-2.5 text-sm"><span className="text-muted">{k}</span><span className="font-medium text-ink text-right">{v}</span></div>
+        ))}
+      </div>
+      <div className="mt-4 flex justify-end">
+        <Button variant="ghost" icon={FiLock} onClick={onChangePassword}>Change password</Button>
+      </div>
+    </Modal>
+  );
+}
+
+function ChangePasswordModal({ open, onClose }) {
+  const { toast } = useApp();
+  const [pw, setPw] = useState({ next: "", confirm: "" });
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e?.preventDefault();
+    if (pw.next !== pw.confirm) return toast("New passwords do not match", "danger");
+    setBusy(true);
+    try {
+      await api.changePassword(pw.next);
+      toast("Password changed — please sign in again", "success");
+      setTimeout(() => window.location.reload(), 1200);
+    } catch (err) { toast(err.message, "danger"); setBusy(false); }
+  };
+
+  return (
+    <Modal open={open} onClose={onClose} size="sm" title="Change password" subtitle="You will sign in again with the new password"
+      footer={<>
+        <Button variant="ghost" onClick={onClose}>Cancel</Button>
+        <Button variant="primary" icon={FiCheck} disabled={busy || !pw.next} onClick={() => submit()}>{busy ? "Saving…" : "Update password"}</Button>
+      </>}>
+      <form onSubmit={submit} className="space-y-3">
+        <Field label="New password" hint="10+ characters with uppercase, lowercase, number & symbol">
+          <input type="password" className="input" value={pw.next} onChange={(e) => setPw((c) => ({ ...c, next: e.target.value }))} autoFocus />
+        </Field>
+        <Field label="Confirm new password">
+          <input type="password" className="input" value={pw.confirm} onChange={(e) => setPw((c) => ({ ...c, confirm: e.target.value }))} />
+        </Field>
+      </form>
+    </Modal>
   );
 }
 

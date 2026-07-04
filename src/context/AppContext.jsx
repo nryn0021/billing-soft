@@ -14,8 +14,8 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
   const [theme, setTheme] = useTheme();
   const idRef = useRef(0);
 
-  const settings = data.settings || {};
-  const permissions = user.permissions || [];
+  const settings = useMemo(() => data.settings || {}, [data.settings]);
+  const permissions = useMemo(() => user.permissions || [], [user.permissions]);
   const can = useCallback((perm) => permissions.includes(perm), [permissions]);
 
   const dismissToast = useCallback((id) => setToasts((list) => list.filter((t) => t.id !== id)), []);
@@ -27,7 +27,7 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
 
   // Generate/resolve the payment QR (uploaded image or a real UPI QR) before printing.
   const printInvoice = useCallback(async (invoice, format = "a4") => {
-    let qr = "";
+    let qr;
     try { qr = await makeInvoiceQr(settings, invoice); } catch { qr = ""; }
     setPrintJob({ invoice, format, qr });
     setTimeout(() => window.print(), 260);

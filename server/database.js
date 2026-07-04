@@ -489,7 +489,14 @@ export async function createBill(user, payload, ctx) {
   const cdFactor = (cd.rate ?? 2.5) / 100;
   const deductionPaise = type === "purchase" && payload.applyCd && cd.enabled !== false && grossPaise > cdThresholdPaise ? Math.round(grossPaise * cdFactor) : 0;
   const netPaise = grossPaise - deductionPaise;
-  const paidPaise = Math.max(0, Math.min(netPaise, Math.round(Number(payload.paidAmount || 0) * 100)));
+  // Payment must be non-negative and cannot exceed the bill total — there is no advance/
+  // credit facility, so genuine overpayment is rejected (not silently clamped) to keep the
+  // recorded paid/due amounts consistent with what the operator entered. A 1-paise tolerance
+  // absorbs floating-point rounding from the client's "pay full amount" helper.
+  const rawPaidPaise = Math.round(Number(payload.paidAmount || 0) * 100);
+  if (!Number.isFinite(rawPaidPaise) || rawPaidPaise < 0) throw new Error("Amount paid is invalid.");
+  if (rawPaidPaise > netPaise + 1) throw new Error("Amount paid cannot exceed the bill total.");
+  const paidPaise = Math.min(rawPaidPaise, netPaise);
   const duePaise = netPaise - paidPaise;
 
   const partyInput = payload.party || {};

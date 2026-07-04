@@ -7,6 +7,7 @@ import { api } from "../api";
 import { useApp } from "../context/AppContext";
 import { Avatar, Badge, Button, Card, Field, Toggle, cx } from "../ui";
 import { makeQr, upiUri } from "../lib/qr";
+import { ADMIN_LOCKED_PERMISSIONS, PERMISSION_CATALOG, defaultRolePermissions } from "../lib/permissions";
 
 const TABS = [
   { id: "business", label: "Business", icon: FiHome },
@@ -15,7 +16,7 @@ const TABS = [
   { id: "printing", label: "Printing", icon: FiPrinter },
   { id: "billing", label: "Billing & tax", icon: FiSliders },
   { id: "notifications", label: "Notifications", icon: FiBell },
-  { id: "permissions", label: "Permissions", icon: FiShield },
+  { id: "permissions", label: "Roles & Access", icon: FiShield },
   { id: "appearance", label: "Appearance", icon: FiMonitor },
   { id: "security", label: "Security", icon: FiKey },
 ];
@@ -57,7 +58,7 @@ export default function Settings() {
         {tab === "printing" && <PrintingTab form={form} patch={patch} editable={editable} onSave={() => save(["thermal"])} saving={saving} />}
         {tab === "billing" && <BillingTab form={form} patch={patch} editable={editable} onSave={() => save(["cd", "prefixes"])} saving={saving} />}
         {tab === "notifications" && <NotificationsTab form={form} patch={patch} editable={editable} onSave={() => save(["notifications"])} saving={saving} />}
-        {tab === "permissions" && <PermissionsTab form={form} setForm={setForm} groups={data.permissionGroups || []} editable={editable} onSave={() => save(["rolePermissions"])} saving={saving} />}
+        {tab === "permissions" && <PermissionsTab form={form} setForm={setForm} groups={data.permissionGroups?.length ? data.permissionGroups : PERMISSION_CATALOG} editable={editable} onSave={() => save(["rolePermissions"])} saving={saving} />}
         {tab === "appearance" && <AppearanceTab form={form} patch={patch} editable={editable} onSave={() => save(["theme"])} saving={saving} />}
         {tab === "security" && <SecurityTab />}
       </div>
@@ -231,41 +232,93 @@ function NotificationsTab({ form, patch, editable, onSave, saving }) {
   );
 }
 
+const ROLES = [
+  { id: "admin", label: "Administrator", hint: "Full control of the mill" },
+  { id: "manager", label: "Manager", hint: "Operations without user admin" },
+  { id: "biller", label: "Biller", hint: "Front-desk billing" },
+];
+
 function PermissionsTab({ form, setForm, groups, editable, onSave, saving }) {
   const [role, setRole] = useState("manager");
   const rp = form.rolePermissions || {};
   const allKeys = useMemo(() => groups.flatMap((g) => g.items.map((i) => i.key)), [groups]);
+  const lockedKeys = role === "admin" ? ADMIN_LOCKED_PERMISSIONS : [];
+  const isLocked = (key) => lockedKeys.includes(key);
+
   const current = rp[role];
-  const granted = new Set(Array.isArray(current) ? current : defaultsFor(role, allKeys));
-  const toggle = (key) => {
-    const next = new Set(granted); next.has(key) ? next.delete(key) : next.add(key);
-    setForm((f) => ({ ...f, rolePermissions: { ...(f.rolePermissions || {}), [role]: [...next] } }));
+  const granted = useMemo(
+    () => new Set(Array.isArray(current) ? current : defaultRolePermissions(role, allKeys)),
+    [current, role, allKeys],
+  );
+
+  const commit = (nextSet) => {
+    // Locked keys are always granted for admins so a tenant can never lock itself out.
+    lockedKeys.forEach((k) => nextSet.add(k));
+    setForm((f) => ({ ...f, rolePermissions: { ...(f.rolePermissions || {}), [role]: [...nextSet] } }));
   };
+  const toggle = (key) => {
+    if (!editable || isLocked(key)) return;
+    const next = new Set(granted); next.has(key) ? next.delete(key) : next.add(key); commit(next);
+  };
+  const grantAll = () => commit(new Set(allKeys));
+  const revokeAll = () => commit(new Set(lockedKeys));
+  const setGroup = (items, on) => {
+    const next = new Set(granted);
+    items.forEach((it) => { if (isLocked(it.key)) return; on ? next.add(it.key) : next.delete(it.key); });
+    commit(next);
+  };
+
+  const grantedCount = allKeys.filter((k) => granted.has(k)).length;
+
   return (
-    <TabCard title="Roles & permissions" subtitle="Feature, page and button-level access per role" icon={FiShield} onSave={onSave} saving={saving} editable={editable}>
-      <div className="flex gap-2 mb-4">
-        {["admin", "manager", "biller"].map((r) => (
-          <button key={r} onClick={() => setRole(r)} className={cx("btn btn-sm capitalize", role === r ? "btn-primary" : "btn-ghost")}>{r}</button>
+    <TabCard title="Roles & access" subtitle="Enable, disable and fine-tune every page, feature and action per role" icon={FiShield} onSave={onSave} saving={saving} editable={editable}>
+      {/* Role picker — clear cards so it reads as role management, not a flat list. */}
+      <div className="grid sm:grid-cols-3 gap-2 mb-4">
+        {ROLES.map((r) => (
+          <button key={r.id} type="button" onClick={() => setRole(r.id)}
+            className={cx("text-left p-3 rounded-xl border transition-all", role === r.id ? "border-brand bg-brand/8" : "border-line hover:bg-surface-2")}>
+            <span className={cx("block text-sm font-semibold capitalize", role === r.id ? "text-brand" : "text-ink")}>{r.label}</span>
+            <span className="block text-xs text-muted mt-0.5">{r.hint}</span>
+          </button>
         ))}
       </div>
-      {role === "admin" && <p className="text-xs text-warning mb-3">Admins always retain full settings & user management (safety lock).</p>}
+
+      <div className="flex flex-wrap items-center gap-2 mb-3">
+        <Badge tone="info">{grantedCount} / {allKeys.length} permissions</Badge>
+        <div className="ml-auto flex gap-2">
+          <Button variant="ghost" size="sm" icon={FiCheckCircle} onClick={grantAll} disabled={!editable}>Enable all</Button>
+          <Button variant="ghost" size="sm" icon={FiLock} onClick={revokeAll} disabled={!editable}>Disable all</Button>
+        </div>
+      </div>
+
+      {role === "admin" && <p className="text-xs text-warning mb-3 flex items-center gap-1.5"><FiShield /> Administrators always retain settings &amp; user management (safety lock — those switches stay on).</p>}
+
       <div className="space-y-4">
-        {groups.map((g) => (
-          <div key={g.group}>
-            <p className="text-xs font-bold uppercase tracking-wide text-muted mb-1.5">{g.group}</p>
-            <div className="grid sm:grid-cols-2 gap-x-6">
-              {g.items.map((it) => <Toggle key={it.key} label={it.label} checked={granted.has(it.key)} onChange={() => toggle(it.key)} disabled={!editable} />)}
+        {groups.map((g) => {
+          const on = g.items.filter((it) => granted.has(it.key)).length;
+          const allOn = on === g.items.length;
+          return (
+            <div key={g.group} className="rounded-xl border border-line p-3">
+              <div className="flex items-center justify-between mb-1.5">
+                <p className="text-xs font-bold uppercase tracking-wide text-muted">{g.group} <span className="text-muted/70">({on}/{g.items.length})</span></p>
+                <button type="button" onClick={() => setGroup(g.items, !allOn)} disabled={!editable}
+                  className="text-xs font-semibold text-brand hover:underline disabled:opacity-40 disabled:no-underline">
+                  {allOn ? "Clear group" : "Select group"}
+                </button>
+              </div>
+              <div className="grid sm:grid-cols-2 gap-x-6">
+                {g.items.map((it) => (
+                  <Toggle key={it.key} label={it.label} hint={isLocked(it.key) ? "Locked for admin" : undefined}
+                    checked={granted.has(it.key)} onChange={() => toggle(it.key)} disabled={!editable || isLocked(it.key)} />
+                ))}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
+      <p className="text-xs text-muted mt-4">Changes take effect the next time each affected user signs in. Your own administrator access is never removed.</p>
     </TabCard>
   );
-}
-function defaultsFor(role, all) {
-  if (role === "admin") return all;
-  if (role === "manager") return all.filter((k) => !k.startsWith("users.") && k !== "settings.manage" && k !== "bills.create" && k !== "backup.manage");
-  return ["dashboard.view", "bills.view", "bills.create", "bills.print", "parties.view", "parties.create", "parties.edit", "inventory.view"];
 }
 
 function AppearanceTab({ form, patch, editable, onSave, saving }) {

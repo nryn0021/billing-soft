@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext } from "react-router-dom";
 import {
-  FiArrowDownLeft, FiArrowUpRight, FiBox, FiDownload, FiMaximize, FiPackage, FiRepeat,
+  FiArrowDownLeft, FiBox, FiDownload, FiMaximize, FiPackage, FiRepeat,
   FiSearch, FiSliders, FiTrendingUp,
 } from "react-icons/fi";
 import { api } from "../api";

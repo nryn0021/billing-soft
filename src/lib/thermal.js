@@ -21,11 +21,14 @@ function loadImage(src) {
  * Render a receipt PNG. Returns { dataUrl, width, height }.
  * widthMm: 58 | 80. qrDataUrl optional.
  */
-export async function renderThermalReceipt(invoice, settings, qrDataUrl, { widthMm = 80, amountInWords } = {}) {
+export async function renderThermalReceipt(invoice, settings, qrDataUrl, { widthMm = 80, amountInWords, accent } = {}) {
   const W = mmToPx(Number(widthMm) || 80);
   const pad = Math.round(W * 0.045);
   const cw = W - pad * 2;
   const isSale = invoice.type === "sale";
+  // Contextual colour: sale = lotus rose, purchase = warm amber. This is what makes the
+  // shared "Red" (sale) / "Yellow" (purchase) bill image immediately recognisable.
+  const tone = accent || (isSale ? "#d6336c" : "#c98a1f");
   const b = settings.business || {}; const bank = settings.bank || {};
   const scale = W / mmToPx(80); // font scale relative to 80mm baseline
 
@@ -33,36 +36,36 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
   const measure = document.createElement("canvas").getContext("2d");
   const font = (px, weight = "normal") => `${weight} ${Math.round(px * scale)}px Helvetica, Arial, sans-serif`;
 
-  const lines = []; // { text, size, weight, align, gapAfter }
-  const push = (text, size = 22, weight = "normal", align = "center", gapAfter = 6) => lines.push({ text, size, weight, align, gapAfter });
-  const rule = () => lines.push({ rule: true, gapAfter: 8 });
-  const kv = (k, v, size = 20, weight = "normal") => lines.push({ kv: [k, v], size, weight, align: "row", gapAfter: 4 });
+  const lines = []; // { text, size, weight, align, gapAfter, color }
+  const push = (text, size = 22, weight = "normal", align = "center", gapAfter = 6, color) => lines.push({ text, size, weight, align, gapAfter, color });
+  const rule = (color) => lines.push({ rule: true, gapAfter: 8, color });
+  const kv = (k, v, size = 20, weight = "normal", color) => lines.push({ kv: [k, v], size, weight, align: "row", gapAfter: 4, color });
 
-  push(b.name || "Business", 34, "bold");
+  push(b.name || "Business", 34, "bold", "center", 6, tone);
   if (b.tagline) push(b.tagline, 18, "normal", "center", 4);
   (b.addressLines || []).forEach((l) => push(l, 18));
   if (b.contact) push(b.contact, 18);
   if (b.gstin) push(`GSTIN: ${b.gstin}`, 18, "normal", "center", 8);
-  rule();
-  push(isSale ? "SALE INVOICE" : "PURCHASE VOUCHER", 24, "bold", "center", 6);
+  rule(tone);
+  push(isSale ? "SALE INVOICE" : "PURCHASE VOUCHER", 24, "bold", "center", 6, tone);
   kv("Bill No", invoice.id, 20, "bold");
   kv("Date", new Date(invoice.date).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }));
   kv("Branch", invoice.branch || "-");
-  rule();
+  rule(tone);
   push(isSale ? "Billed To" : "Received From", 18, "bold", "left", 4);
   push(invoice.party, 22, "bold", "left", 2);
   if (invoice.partyPhone) push(invoice.partyPhone, 18, "normal", "left", 2);
   if (invoice.partyAddress) push(invoice.partyAddress, 18, "normal", "left", 6);
-  rule();
+  rule(tone);
   push(`${invoice.product}${invoice.productHindi ? " / " + invoice.productHindi : ""}`, 20, "bold", "left", 2);
   kv(`${invoice.totalKg} kg x INR ${invoice.rate}`, `INR ${money(invoice.gross)}`);
-  rule();
+  rule(tone);
   kv("Gross", `INR ${money(invoice.gross)}`);
   if (invoice.cdDeduction > 0) kv("CD deduction", `- INR ${money(invoice.cdDeduction)}`);
-  kv(`Net ${isSale ? "receivable" : "payable"}`, `INR ${money(invoice.netAmount)}`, 24, "bold");
+  kv(`Net ${isSale ? "receivable" : "payable"}`, `INR ${money(invoice.netAmount)}`, 24, "bold", tone);
   kv("Paid", `INR ${money(invoice.paidAmount)}`);
   kv("Balance due", `INR ${money(invoice.dueAmount)}`, 20, "bold");
-  rule();
+  rule(tone);
   if (amountInWords) push(`Rupees ${amountInWords(Math.round(invoice.netAmount))} Only`, 17, "normal", "center", 8);
 
   const qrImg = settings.invoice?.showQr !== false ? await loadImage(qrDataUrl) : null;
@@ -93,12 +96,13 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
   for (const ln of lines) {
     if (ln.rule) {
       y += Math.round(4 * scale);
-      ctx.save(); ctx.strokeStyle = "#000"; ctx.setLineDash([Math.round(4 * scale), Math.round(4 * scale)]);
+      ctx.save(); ctx.strokeStyle = ln.color || "#000"; ctx.setLineDash([Math.round(4 * scale), Math.round(4 * scale)]);
       ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(W - pad, y); ctx.stroke(); ctx.restore();
       y += Math.round(6 * scale) + (ln.gapAfter || 0) * scale;
       continue;
     }
     ctx.font = font(ln.size, ln.weight);
+    ctx.fillStyle = ln.color || "#000000";
     const lh = Math.round(ln.size * 1.35 * scale);
     if (ln.kv) {
       const [k, v] = ln.kv;
@@ -114,6 +118,7 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
     }
   }
 
+  ctx.fillStyle = "#000000"; // reset after any tinted lines
   if (qrImg) {
     y += Math.round(10 * scale);
     ctx.drawImage(qrImg, (W - qrSize) / 2, y, qrSize, qrSize);
