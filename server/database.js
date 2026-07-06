@@ -16,6 +16,7 @@ import { db } from "./db.js";
 import {
   appSettings,
   auditEvents,
+  billCounters,
   billLines,
   bills,
   branches,
@@ -27,7 +28,9 @@ import {
   sessions,
   stockMovements,
   tenants,
+  transporters,
   users,
+  vehicles,
 } from "./schema.js";
 import { decryptSensitive, encryptSensitive } from "./crypto.js";
 import { hashPassword, newCsrfToken, newSessionToken, normalizePhone, tokenHash } from "./security.js";
@@ -279,11 +282,29 @@ function mapParty(row) {
     name: row.name,
     phone: row.phoneDisplay,
     address: row.address,
+    gstin: row.gstin || "",
     bankAccount: decryptSensitive(row.bankAccountEncrypted),
     bankIfsc: row.bankIfsc || "",
     kind: row.kind,
     balance: row.balancePaise / 100,
     balanceType: row.balanceType,
+  };
+}
+
+function mapTransporter(row) {
+  return { id: row.displayId, name: row.name, phone: row.phone || "" };
+}
+
+function mapVehicle(row) {
+  return {
+    id: row.displayId,
+    vehicleNo: row.vehicleNo,
+    ownerName: row.ownerName || "",
+    ownerMob: row.ownerMob || "",
+    driverName: row.driverName || "",
+    driverMob: row.driverMob || "",
+    dlNo: row.dlNo || "",
+    aadhaar: decryptSensitive(row.aadhaarEncrypted),
   };
 }
 
@@ -297,15 +318,19 @@ async function transactionRows(user) {
       createdAt: bills.createdAt,
       grossPaise: bills.grossPaise,
       deductionPaise: bills.deductionPaise,
+      discountPaise: bills.discountPaise,
       netPaise: bills.netPaise,
       paidPaise: bills.paidPaise,
       duePaise: bills.duePaise,
       paymentMethod: bills.paymentMethod,
+      meta: bills.meta,
+      remarks: bills.remarks,
       branchId: bills.branchId,
       partyCode: parties.displayId,
       partyName: parties.name,
       partyPhone: parties.phoneDisplay,
       partyAddress: parties.address,
+      partyGstin: parties.gstin,
       partyBankAccount: parties.bankAccountEncrypted,
       partyBankIfsc: parties.bankIfsc,
       productCode: products.displayId,
@@ -331,15 +356,60 @@ async function transactionRows(user) {
     .limit(500);
 }
 
+// Truck-sale document metadata: free-text logistics fields + informational money figures.
+// Core bill money (gross/net/paid/due) stays in the integer-paise columns; these auxiliary
+// transport amounts are print-only and stored inside the JSON as integer paise too.
+const TRUCK_META_STRINGS = [
+  "buyerGstin", "hsnCode", "placeOfSupply", "invoiceNo", "challanNo",
+  "transportName", "transportMob", "vehicleNo", "driverName", "driverMob", "ownerName", "ownerMob", "dlNo",
+  "brokerName", "brokerMob",
+];
+const TRUCK_META_MONEY = ["loadingCharge", "bharaAdv", "bharaLess", "freight", "bhara", "advance", "toPay"];
+// These three are SIGNED adjustments that change the Bill-of-Supply total: a negative
+// value deducts. The rest (freight/bhara/advance/toPay) are print-only and stay > 0.
+const TRUCK_META_SIGNED = new Set(["loadingCharge", "bharaAdv", "bharaLess"]);
+
+function sanitizeTruckMeta(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const out = { kind: "truck" };
+  for (const key of TRUCK_META_STRINGS) {
+    const value = raw[key];
+    if (value != null && String(value).trim()) out[key] = String(value).trim().slice(0, 120);
+  }
+  const bags = Number(raw.bags);
+  if (Number.isFinite(bags) && bags > 0) out.bags = Math.round(bags);
+  for (const key of TRUCK_META_MONEY) {
+    const value = Number(raw[key]);
+    if (!Number.isFinite(value)) continue;
+    if (TRUCK_META_SIGNED.has(key)) { if (value !== 0) out[`${key}Paise`] = Math.round(value * 100); }
+    else if (value > 0) out[`${key}Paise`] = Math.round(value * 100);
+  }
+  return out;
+}
+
+// Convert stored paise fields back to rupees for the client/print layer.
+function mapMeta(meta) {
+  if (!meta || typeof meta !== "object") return null;
+  const out = { ...meta };
+  for (const key of TRUCK_META_MONEY) {
+    if (out[`${key}Paise`] != null) { out[key] = out[`${key}Paise`] / 100; delete out[`${key}Paise`]; }
+  }
+  return out;
+}
+
 function mapTransaction(row) {
   return {
     id: row.id,
     type: row.billType,
+    kind: row.meta?.kind || "standard",
+    meta: mapMeta(row.meta),
+    remarks: row.remarks || "",
     date: row.createdAt,
     partyId: row.partyCode,
     party: row.partyName,
     partyPhone: row.partyPhone,
     partyAddress: row.partyAddress,
+    partyGstin: row.partyGstin || "",
     partyBankAccount: decryptSensitive(row.partyBankAccount),
     partyBankIfsc: row.partyBankIfsc || "",
     productId: row.productCode,
@@ -352,6 +422,7 @@ function mapTransaction(row) {
     baseRate: row.baseRatePaisePerKg / 100,
     gross: row.grossPaise / 100,
     cdDeduction: row.deductionPaise / 100,
+    discount: row.discountPaise / 100,
     netAmount: row.netPaise / 100,
     paidAmount: row.paidPaise / 100,
     dueAmount: row.duePaise / 100,
@@ -392,12 +463,26 @@ export async function getBootstrap(user) {
     .from(branches)
     .where(and(eq(branches.tenantId, user.tenantId), eq(branches.active, true)))
     .orderBy(asc(branches.name));
+  const transporterRows = await db
+    .select()
+    .from(transporters)
+    .where(eq(transporters.tenantId, user.tenantId))
+    .orderBy(sql`lower(${transporters.name})`);
+  const vehicleRows = await db
+    .select()
+    .from(vehicles)
+    .where(eq(vehicles.tenantId, user.tenantId))
+    .orderBy(sql`upper(${vehicles.vehicleNo})`);
   const transactions = (await transactionRows(user)).map(mapTransaction);
   const settings = await getSettings(user.tenantId);
+  const serials = await countersFor(user.tenantId);
   return {
     user,
     products: productRows.map(mapProduct),
     parties: partyRows.map(mapParty),
+    transporters: transporterRows.map(mapTransporter),
+    vehicles: vehicleRows.map(mapVehicle),
+    serials,
     transactions,
     audits: auditRows.map((row) => ({
       id: row.id,
@@ -440,6 +525,20 @@ function cleanIfsc(value) {
   return text;
 }
 
+function cleanGstin(value) {
+  // Lenient: this runs on every bill post, so a mistyped/over-long GSTIN must NOT reject the
+  // sale (do not route through the throwing optionalText). Only a well-formed 15-char GSTIN is
+  // persisted to the party master; anything else is simply dropped.
+  const text = String(value || "").trim().toUpperCase();
+  return /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]{2}$/.test(text) ? text : "";
+}
+
+function cleanAadhaar(value) {
+  const text = optionalText(value, "Aadhaar", 14).replace(/\s+/g, "");
+  if (text && !/^[0-9]{12}$/.test(text)) throw new Error("Aadhaar must be 12 digits.");
+  return text;
+}
+
 async function nextPartyId(executor, tenantId) {
   const [row] = await executor
     .select({ value: sql`max(cast(substr(${parties.displayId}, 5) as integer))` })
@@ -464,6 +563,38 @@ async function nextBillId(executor, tenantId, type, branchCode) {
   return `${prefix}-${branch.invoicePrefix}-${String(Number(row?.value || 0) + 1).padStart(4, "0")}`;
 }
 
+// Atomically assign the next truck-document number (Bill-of-Supply invoice / challan).
+// Runs inside the bill transaction: seed the counter row if missing, then bump-and-return
+// under a row lock so concurrent posts can never collide. Admin can reset via updateCounters.
+async function nextDocNumber(executor, tenantId, docType) {
+  await executor
+    .insert(billCounters)
+    .values({ tenantId, docType, prefix: "", lastNumber: 0 })
+    .onConflictDoNothing({ target: [billCounters.tenantId, billCounters.docType] });
+  const [row] = await executor
+    .update(billCounters)
+    .set({ lastNumber: sql`${billCounters.lastNumber} + 1`, updatedAt: new Date() })
+    .where(and(eq(billCounters.tenantId, tenantId), eq(billCounters.docType, docType)))
+    .returning({ lastNumber: billCounters.lastNumber, prefix: billCounters.prefix });
+  return `${row.prefix || ""}${Number(row.lastNumber)}`;
+}
+
+async function nextMasterId(executor, table, tenantId, prefix) {
+  const [row] = await executor
+    .select({ value: sql`max(cast(substr(${table.displayId}, 5) as integer))` })
+    .from(table)
+    .where(and(eq(table.tenantId, tenantId), sql`${table.displayId} like ${`${prefix}-%`}`));
+  return `${prefix}-${String(Number(row?.value || 1000) + 1).padStart(4, "0")}`;
+}
+
+// Current serial config for the client (prefix + the NEXT number to be issued).
+async function countersFor(tenantId) {
+  const rows = await db.select().from(billCounters).where(eq(billCounters.tenantId, tenantId));
+  const out = { invoice: { prefix: "", next: 1 }, challan: { prefix: "", next: 1 } };
+  for (const r of rows) out[r.docType] = { prefix: r.prefix || "", next: Number(r.lastNumber) + 1 };
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Bill posting (single atomic transaction)
 // ---------------------------------------------------------------------------
@@ -482,13 +613,31 @@ export async function createBill(user, payload, ctx) {
   if (!Number.isSafeInteger(ratePaise) || ratePaise <= 0) throw new Error("Rate is invalid.");
   const weightGrams = Math.round(quantity * multiplier);
   const grossPaise = Math.round((weightGrams / 1000) * ratePaise);
+
+  // Detailed "truck sale" bills (GST Bill of Supply + Challan) carry extra document data.
+  // They are still ordinary sale bills for stock/ledger purposes — only the print output
+  // differs. Built up-front so its three SIGNED adjustment figures (loading charge, bhara
+  // advance, bhada less) can fold into the net total below (negative values deduct).
+  const billMeta = payload.kind === "truck" && type === "sale" ? sanitizeTruckMeta(payload.meta) : null;
+  const adjustmentsPaise = billMeta
+    ? (billMeta.loadingChargePaise || 0) + (billMeta.bharaAdvPaise || 0) + (billMeta.bharaLessPaise || 0)
+    : 0;
+
   // CD deduction rule is configurable in Settings, but still only applies when the
-  // biller manually enables it (payload.applyCd) on a purchase bill.
+  // biller manually enables it (payload.applyCd) on a purchase bill. The deduction is
+  // rounded UP to the next whole rupee (never fractional paise) per mill convention.
   const cd = (await getSettings(user.tenantId)).cd || {};
   const cdThresholdPaise = Math.round((cd.threshold ?? 20000) * 100);
   const cdFactor = (cd.rate ?? 2.5) / 100;
-  const deductionPaise = type === "purchase" && payload.applyCd && cd.enabled !== false && grossPaise > cdThresholdPaise ? Math.round(grossPaise * cdFactor) : 0;
-  const netPaise = grossPaise - deductionPaise;
+  const deductionPaise = type === "purchase" && payload.applyCd && cd.enabled !== false && grossPaise > cdThresholdPaise
+    ? Math.ceil((grossPaise * cdFactor) / 100) * 100
+    : 0;
+  // Optional manual discount entered by the operator (rupees). Cannot be negative and,
+  // together with the CD deduction, cannot exceed the gross amount.
+  const discountPaise = Math.round(Number(payload.discount || 0) * 100);
+  if (!Number.isFinite(discountPaise) || discountPaise < 0) throw new Error("Discount amount is invalid.");
+  const netPaise = grossPaise - deductionPaise - discountPaise + adjustmentsPaise;
+  if (netPaise < 0) throw new Error("Discount, deduction and charges cannot exceed the bill amount.");
   // Payment must be non-negative and cannot exceed the bill total — there is no advance/
   // credit facility, so genuine overpayment is rejected (not silently clamped) to keep the
   // recorded paid/due amounts consistent with what the operator entered. A 1-paise tolerance
@@ -509,6 +658,8 @@ export async function createBill(user, payload, ctx) {
   const bankIfsc = cleanIfsc(partyInput.bankIfsc);
   if ((bankAccount && !bankIfsc) || (!bankAccount && bankIfsc)) throw new Error("Enter both bank account number and IFSC, or leave both blank.");
   const encryptedBankAccount = encryptSensitive(bankAccount);
+  const gstin = cleanGstin(partyInput.gstin);
+  const remarks = optionalText(payload.remarks, "Remarks", 500);
   const paymentMethod = requireText(payload.paymentMethod, "Payment method", 40);
 
   let billDisplayId;
@@ -557,6 +708,7 @@ export async function createBill(user, payload, ctx) {
           phoneDisplay,
           address,
           kind: type === "sale" ? "customer" : "supplier",
+          gstin: gstin || null,
           bankAccountEncrypted: encryptedBankAccount,
           bankIfsc: bankIfsc || null,
         })
@@ -571,6 +723,8 @@ export async function createBill(user, payload, ctx) {
           phoneDisplay,
           address,
           kind,
+          // Never wipe a stored GSTIN when a bill is posted without one.
+          gstin: gstin || party.gstin || null,
           bankAccountEncrypted: encryptedBankAccount,
           bankIfsc: bankIfsc || null,
           updatedAt: new Date(),
@@ -579,6 +733,12 @@ export async function createBill(user, payload, ctx) {
     }
 
     billDisplayId = await nextBillId(tx, user.tenantId, type, branchCode);
+    // Truck sales get auto-incrementing Bill-of-Supply + Challan numbers (assigned atomically
+    // inside this transaction, overriding anything the client sent).
+    if (billMeta) {
+      billMeta.invoiceNo = await nextDocNumber(tx, user.tenantId, "invoice");
+      billMeta.challanNo = await nextDocNumber(tx, user.tenantId, "challan");
+    }
     const [bill] = await tx
       .insert(bills)
       .values({
@@ -590,10 +750,13 @@ export async function createBill(user, payload, ctx) {
         createdBy: user.id,
         grossPaise,
         deductionPaise,
+        discountPaise,
         netPaise,
         paidPaise,
         duePaise,
         paymentMethod,
+        meta: billMeta,
+        remarks: remarks || null,
       })
       .returning({ id: bills.id });
 
@@ -892,6 +1055,103 @@ export async function setUserActive(actor, userId, active, ctx) {
     description: `User ${target.username} ${active ? "activated" : "deactivated"}`, ctx,
   });
   return listUsers(actor);
+}
+
+// ---------------------------------------------------------------------------
+// Truck-sale master data (transporters, vehicles) + document serial counters
+// ---------------------------------------------------------------------------
+
+export async function createTransporter(user, input, ctx) {
+  const name = requireText(input.name, "Transporter name", 120);
+  const phone = optionalText(input.phone, "Phone", 20);
+  const displayId = await nextMasterId(db, transporters, user.tenantId, "TRP");
+  await db.insert(transporters).values({ tenantId: user.tenantId, displayId, name, phone: phone || null });
+  await writeAudit(db, {
+    tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "master",
+    action: "create", entity: "transporter", entityId: displayId, description: `Transporter ${name} added`, ctx,
+  });
+  return getBootstrap(user);
+}
+
+export async function updateTransporter(user, id, input, ctx) {
+  const name = requireText(input.name, "Transporter name", 120);
+  const phone = optionalText(input.phone, "Phone", 20);
+  const result = await db
+    .update(transporters)
+    .set({ name, phone: phone || null, updatedAt: new Date() })
+    .where(and(eq(transporters.tenantId, user.tenantId), eq(transporters.displayId, id)))
+    .returning({ id: transporters.id });
+  if (!result.length) throw new Error("Transporter not found.");
+  await writeAudit(db, {
+    tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "master",
+    action: "update", entity: "transporter", entityId: id, description: `Transporter ${name} updated`, ctx,
+  });
+  return getBootstrap(user);
+}
+
+function vehicleValues(input) {
+  return {
+    vehicleNo: requireText(input.vehicleNo, "Vehicle number", 20).toUpperCase(),
+    ownerName: optionalText(input.ownerName, "Owner name", 120) || null,
+    ownerMob: optionalText(input.ownerMob, "Owner mobile", 20) || null,
+    driverName: optionalText(input.driverName, "Driver name", 120) || null,
+    driverMob: optionalText(input.driverMob, "Driver mobile", 20) || null,
+    dlNo: optionalText(input.dlNo, "Driving licence", 40).toUpperCase() || null,
+    aadhaarEncrypted: encryptSensitive(cleanAadhaar(input.aadhaar)),
+  };
+}
+
+export async function createVehicle(user, input, ctx) {
+  const values = vehicleValues(input);
+  const displayId = await nextMasterId(db, vehicles, user.tenantId, "VEH");
+  await db.insert(vehicles).values({ tenantId: user.tenantId, displayId, ...values });
+  await writeAudit(db, {
+    tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "master",
+    action: "create", entity: "vehicle", entityId: displayId, description: `Vehicle ${values.vehicleNo} added`, ctx,
+  });
+  return getBootstrap(user);
+}
+
+export async function updateVehicle(user, id, input, ctx) {
+  const values = vehicleValues(input);
+  const result = await db
+    .update(vehicles)
+    .set({ ...values, updatedAt: new Date() })
+    .where(and(eq(vehicles.tenantId, user.tenantId), eq(vehicles.displayId, id)))
+    .returning({ id: vehicles.id });
+  if (!result.length) throw new Error("Vehicle not found.");
+  await writeAudit(db, {
+    tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "master",
+    action: "update", entity: "vehicle", entityId: id, description: `Vehicle ${values.vehicleNo} updated`, ctx,
+  });
+  return getBootstrap(user);
+}
+
+export async function getCounters(user) {
+  return countersFor(user.tenantId);
+}
+
+/** Admin configures / resets the invoice + challan numbering (prefix + next number). */
+export async function updateCounters(user, patch, ctx) {
+  for (const docType of ["invoice", "challan"]) {
+    const cfg = patch?.[docType];
+    if (!cfg) continue;
+    const prefix = optionalText(cfg.prefix, "Prefix", 12);
+    const next = Math.max(1, Math.round(Number(cfg.next) || 1));
+    const lastNumber = next - 1;
+    await db
+      .insert(billCounters)
+      .values({ tenantId: user.tenantId, docType, prefix: prefix || "", lastNumber })
+      .onConflictDoUpdate({
+        target: [billCounters.tenantId, billCounters.docType],
+        set: { prefix: prefix || "", lastNumber, updatedAt: new Date() },
+      });
+  }
+  await writeAudit(db, {
+    tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "settings",
+    action: "update", entity: "settings", entityId: "serials", description: "Document numbering updated", ctx,
+  });
+  return getBootstrap(user);
 }
 
 export { publicUser };

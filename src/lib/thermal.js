@@ -3,6 +3,8 @@
 // identical on every 58 mm / 80 mm thermal printer. Supports download, print,
 // WhatsApp/native share and PDF.
 
+import { paymentStamp } from "./format";
+
 const DPI = 300;
 const mmToPx = (mm) => Math.round((mm / 25.4) * DPI);
 
@@ -10,7 +12,9 @@ function loadImage(src) {
   return new Promise((resolve) => {
     if (!src) return resolve(null);
     const img = new Image();
-    img.crossOrigin = "anonymous";
+    // Only set crossOrigin for remote URLs — setting it on a data: URL breaks decoding
+    // in some browsers, which is one reason an uploaded QR could silently fail to draw.
+    if (!/^data:/.test(src)) img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => resolve(null);
     img.src = src;
@@ -21,14 +25,14 @@ function loadImage(src) {
  * Render a receipt PNG. Returns { dataUrl, width, height }.
  * widthMm: 58 | 80. qrDataUrl optional.
  */
-export async function renderThermalReceipt(invoice, settings, qrDataUrl, { widthMm = 80, amountInWords, accent } = {}) {
+export async function renderThermalReceipt(invoice, settings, qrDataUrl, { widthMm = 80, amountInWords } = {}) {
   const W = mmToPx(Number(widthMm) || 80);
   const pad = Math.round(W * 0.045);
   const cw = W - pad * 2;
   const isSale = invoice.type === "sale";
-  // Contextual colour: sale = lotus rose, purchase = warm amber. This is what makes the
-  // shared "Red" (sale) / "Yellow" (purchase) bill image immediately recognisable.
-  const tone = accent || (isSale ? "#d6336c" : "#c98a1f");
+  // Thermal printers are monochrome — the receipt is rendered in pure black on white so
+  // it prints crisp on any 58/80 mm roll. No colour tone on the thermal bill.
+  const tone = "#000000";
   const b = settings.business || {}; const bank = settings.bank || {};
   const scale = W / mmToPx(80); // font scale relative to 80mm baseline
 
@@ -62,13 +66,28 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
   rule(tone);
   kv("Gross", `INR ${money(invoice.gross)}`);
   if (invoice.cdDeduction > 0) kv("CD deduction", `- INR ${money(invoice.cdDeduction)}`);
+  if (invoice.discount > 0) kv("Discount", `- INR ${money(invoice.discount)}`);
   kv(`Net ${isSale ? "receivable" : "payable"}`, `INR ${money(invoice.netAmount)}`, 24, "bold", tone);
   kv("Paid", `INR ${money(invoice.paidAmount)}`);
   kv("Balance due", `INR ${money(invoice.dueAmount)}`, 20, "bold");
   rule(tone);
+  // Payment-status stamp — thermal is monochrome, so it's a bold bordered banner rather
+  // than a colour stamp (green/orange/red only apply to the A4/PDF/on-screen bills).
+  const ps = paymentStamp(invoice);
+  const stampText = ps.state === "paid"
+    ? `PAID${invoice.paymentMethod ? " - " + String(invoice.paymentMethod).toUpperCase() : ""}`
+    : `BALANCE DUE: INR ${money(invoice.dueAmount)}`;
+  push(`*** ${stampText} ***`, 22, "bold", "center", 6, tone);
+  rule(tone);
   if (amountInWords) push(`Rupees ${amountInWords(Math.round(invoice.netAmount))} Only`, 17, "normal", "center", 8);
+  if (invoice.remarks) push(`Remarks: ${invoice.remarks}`, 15, "normal", "center", 8);
+  // Proprietor signature line on every receipt.
+  push(`For ${b.name || "the mill"}`, 16, "normal", "right", 2);
+  if (b.owner) push(`${b.owner}, Proprietor`, 18, "bold", "right", 8);
 
-  const qrImg = settings.invoice?.showQr !== false ? await loadImage(qrDataUrl) : null;
+  // qrDataUrl is already "" when the QR is off for this bill type or the bill is paid
+  // (makeInvoiceQr gates it), so loading it is enough — no separate showQr check here.
+  const qrImg = await loadImage(qrDataUrl);
   const qrSize = qrImg ? Math.round(cw * 0.5) : 0;
 
   const footer = settings.invoice?.footer || "Thank you for your business.";
@@ -81,7 +100,8 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
     const wrapped = wrapText(measure, ln.kv ? `${ln.kv[0]} ${ln.kv[1]}` : ln.text, cw);
     h += wrapped.length * Math.round(ln.size * 1.35 * scale) + (ln.gapAfter || 0) * scale;
   }
-  if (qrImg) h += qrSize + Math.round(30 * scale);
+  // caption(26) + post-QR(10) + UPI(20) + bank name(20) + lead/trail(8+6) = 90 beyond qrSize.
+  if (qrImg) h += qrSize + Math.round(90 * scale);
   h += Math.round(40 * scale); // footer
   h = Math.round(h + pad);
 
@@ -118,14 +138,18 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
     }
   }
 
-  ctx.fillStyle = "#000000"; // reset after any tinted lines
+  ctx.fillStyle = "#000000"; // always black — thermal is monochrome
   if (qrImg) {
-    y += Math.round(10 * scale);
+    y += Math.round(8 * scale);
+    ctx.font = font(19, "bold"); ctx.textAlign = "center";
+    ctx.fillText(`Scan & Pay INR ${money(invoice.dueAmount)}`, W / 2, y);
+    y += Math.round(26 * scale);
     ctx.drawImage(qrImg, (W - qrSize) / 2, y, qrSize, qrSize);
-    y += qrSize + Math.round(6 * scale);
+    y += qrSize + Math.round(10 * scale);
     ctx.font = font(16, "normal"); ctx.textAlign = "center";
-    ctx.fillText(`UPI: ${bank.upi || ""}`, W / 2, y);
-    y += Math.round(24 * scale);
+    if (bank.upi) { ctx.fillText(`UPI: ${bank.upi}`, W / 2, y); y += Math.round(20 * scale); }
+    if (bank.name) { ctx.fillText(bank.name, W / 2, y); y += Math.round(20 * scale); }
+    y += Math.round(6 * scale);
   }
   ctx.font = font(16, "normal"); ctx.textAlign = "center";
   wrapText(ctx, footer, cw).forEach((w) => { ctx.fillText(w, W / 2, y); y += Math.round(20 * scale); });

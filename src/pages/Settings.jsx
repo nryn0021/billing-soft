@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useBlocker } from "react-router-dom";
 import {
-  FiBell, FiCheckCircle, FiCreditCard, FiHome, FiKey, FiLock, FiMonitor, FiMoon,
-  FiPrinter, FiShield, FiSliders, FiSun, FiTrash2, FiUpload, FiFileText,
+  FiAlertTriangle, FiBell, FiCheckCircle, FiCreditCard, FiHash, FiHome, FiKey, FiLock, FiMonitor, FiMoon,
+  FiPrinter, FiShield, FiSliders, FiSun, FiFileText,
 } from "react-icons/fi";
 import { api } from "../api";
 import { useApp } from "../context/AppContext";
-import { Avatar, Badge, Button, Card, Field, Toggle, cx } from "../ui";
+import { Avatar, Badge, Button, Card, Field, Modal, Toggle, cx } from "../ui";
 import { makeQr, upiUri } from "../lib/qr";
 import { ADMIN_LOCKED_PERMISSIONS, PERMISSION_CATALOG, defaultRolePermissions } from "../lib/permissions";
 
@@ -35,7 +36,34 @@ export default function Settings() {
     try { await saveSettings(Object.fromEntries(keys.map((k) => [k, form[k]]))); } finally { setSaving(false); }
   };
 
+  // -------- unsaved-changes guard --------
+  // Which top-level settings sections were edited but not yet saved.
+  const changedKeys = useMemo(
+    () => Object.keys(form).filter((k) => JSON.stringify(form[k]) !== JSON.stringify(settings[k])),
+    [form, settings],
+  );
+  const dirty = editable && changedKeys.length > 0;
+
+  // Block in-app navigation away from Settings while there are unsaved edits.
+  const blocker = useBlocker(
+    useCallback(({ currentLocation, nextLocation }) => dirty && currentLocation.pathname !== nextLocation.pathname, [dirty]),
+  );
+
+  // Warn on browser refresh / tab close too.
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const handler = (e) => { e.preventDefault(); e.returnValue = ""; };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
+
+  const saveAndLeave = async () => {
+    if (changedKeys.length) await save(changedKeys);
+    blocker.proceed?.();
+  };
+
   return (
+    <>
     <div className="grid lg:grid-cols-[15rem_1fr] gap-4 max-w-[1200px] mx-auto">
       <aside className="lg:sticky lg:top-20 h-fit">
         <div className="lg:hidden mb-2"><select value={tab} onChange={(e) => setTab(e.target.value)} className="input">{TABS.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}</select></div>
@@ -53,7 +81,7 @@ export default function Settings() {
           <div className="mb-4 text-sm text-ink-2 bg-warning/10 border border-warning/25 rounded-xl px-3 py-2.5">You have view-only access to settings.</div>
         )}
         {tab === "business" && <BusinessTab form={form} patch={patch} editable={editable} onSave={() => save(["business"])} saving={saving} />}
-        {tab === "bank" && <BankTab form={form} patch={patch} setForm={setForm} editable={editable} onSave={() => save(["bank", "qrImage"])} saving={saving} />}
+        {tab === "bank" && <BankTab form={form} patch={patch} editable={editable} onSave={() => save(["bank"])} saving={saving} />}
         {tab === "invoice" && <InvoiceTab form={form} patch={patch} editable={editable} onSave={() => save(["invoice"])} saving={saving} />}
         {tab === "printing" && <PrintingTab form={form} patch={patch} editable={editable} onSave={() => save(["thermal"])} saving={saving} />}
         {tab === "billing" && <BillingTab form={form} patch={patch} editable={editable} onSave={() => save(["cd", "prefixes"])} saving={saving} />}
@@ -63,6 +91,20 @@ export default function Settings() {
         {tab === "security" && <SecurityTab />}
       </div>
     </div>
+
+    <Modal open={blocker.state === "blocked"} onClose={() => blocker.reset?.()} size="sm"
+      title="Unsaved changes" subtitle={`You have unsaved edits in ${changedKeys.length} section${changedKeys.length === 1 ? "" : "s"}.`}
+      footer={<>
+        <Button variant="ghost" onClick={() => blocker.reset?.()}>Keep editing</Button>
+        <Button variant="danger" onClick={() => blocker.proceed?.()}>Discard &amp; leave</Button>
+        <Button variant="primary" icon={FiCheckCircle} disabled={saving} onClick={saveAndLeave}>{saving ? "Saving…" : "Save & leave"}</Button>
+      </>}>
+      <div className="flex items-start gap-3">
+        <span className="grid place-items-center size-10 rounded-xl bg-warning/15 text-warning shrink-0"><FiAlertTriangle /></span>
+        <p className="text-sm text-ink-2">Do you want to save your changes before leaving Settings? Unsaved changes will be lost if you discard.</p>
+      </div>
+    </Modal>
+    </>
   );
 }
 
@@ -104,20 +146,12 @@ function BusinessTab({ form, patch, editable, onSave, saving }) {
   );
 }
 
-function BankTab({ form, patch, setForm, editable, onSave, saving }) {
+function BankTab({ form, patch, editable, onSave, saving }) {
   const bank = form.bank || {};
   const set = (k, v) => patch("bank", { ...bank, [k]: v });
   const [genQr, setGenQr] = useState("");
+  const hasUpi = !!(bank.upi || "").trim();
   useEffect(() => { let ok = true; makeQr(upiUri(form, null)).then((d) => ok && setGenQr(d)); return () => { ok = false; }; }, [form]);
-
-  const onUpload = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (file.size > 400 * 1024) { alert("Please upload an image under 400 KB."); return; }
-    const reader = new FileReader();
-    reader.onload = () => setForm((f) => ({ ...f, qrImage: reader.result }));
-    reader.readAsDataURL(file);
-  };
 
   return (
     <TabCard title="Bank & UPI" subtitle="Payment details and QR shown to parties" icon={FiCreditCard} onSave={onSave} saving={saving} editable={editable}>
@@ -126,19 +160,17 @@ function BankTab({ form, patch, setForm, editable, onSave, saving }) {
         <Text label="Account number" value={bank.account} onChange={(v) => set("account", v)} />
         <Text label="IFSC" value={bank.ifsc} onChange={(v) => set("ifsc", v)} />
         <Text label="Branch" value={bank.branch} onChange={(v) => set("branch", v)} />
-        <Text label="UPI ID" value={bank.upi} onChange={(v) => set("upi", v)} />
+        <Text label="UPI ID" value={bank.upi} onChange={(v) => set("upi", v)} placeholder="name@bank" />
+        <Text label="Payee name (UPI)" value={bank.upiName} onChange={(v) => set("upiName", v)} placeholder="Account holder name" />
       </div>
       <div className="mt-4 flex flex-wrap items-center gap-4 rounded-xl border border-line p-4">
         <div className="text-center">
-          <img src={form.qrImage || genQr} alt="Payment QR" className="size-28 rounded-lg border border-line bg-white object-contain" />
-          <p className="text-[11px] text-muted mt-1">{form.qrImage ? "Uploaded QR" : "Generated from UPI"}</p>
+          <img src={genQr} alt="Payment QR" className="size-28 rounded-lg border border-line bg-white object-contain" />
+          <p className="text-[11px] text-muted mt-1">{hasUpi ? "Live preview" : "Set a UPI ID"}</p>
         </div>
-        <div className="space-y-2">
-          <p className="text-sm text-ink-2 max-w-sm">Upload your own payment QR image, or leave blank to auto-generate one from your UPI id. Every invoice updates instantly.</p>
-          <div className="flex gap-2">
-            <label className="btn btn-ghost btn-sm cursor-pointer"><FiUpload /> Upload QR<input type="file" accept="image/*" className="hidden" onChange={onUpload} disabled={!editable} /></label>
-            {form.qrImage && <Button variant="danger" size="sm" icon={FiTrash2} onClick={() => setForm((f) => ({ ...f, qrImage: "" }))}>Remove</Button>}
-          </div>
+        <div className="space-y-1">
+          <p className="text-sm text-ink-2 max-w-sm">The payment QR is generated automatically from your <b>UPI ID</b>. When a customer scans it, their UPI app opens paying <b>you</b>, with that bill's due amount already filled in. Change the UPI ID above anytime — every bill updates instantly.</p>
+          {!hasUpi && <p className="text-xs text-warn">Enter your UPI ID to activate scan-to-pay QR codes on bills.</p>}
         </div>
       </div>
     </TabCard>
@@ -148,6 +180,9 @@ function BankTab({ form, patch, setForm, editable, onSave, saving }) {
 function InvoiceTab({ form, patch, editable, onSave, saving }) {
   const inv = form.invoice || {};
   const set = (k, v) => patch("invoice", { ...inv, [k]: v });
+  const qrTypes = inv.qrTypes || {};
+  const setQrType = (k, v) => set("qrTypes", { ...qrTypes, [k]: v });
+  const qrOn = inv.showQr !== false;
   return (
     <TabCard title="Invoice content" subtitle="Footer, terms, signature & logo" icon={FiFileText} onSave={onSave} saving={saving} editable={editable}>
       <div className="grid sm:grid-cols-2 gap-3">
@@ -156,7 +191,17 @@ function InvoiceTab({ form, patch, editable, onSave, saving }) {
         <Field label="Invoice footer" wide><input className="input" value={inv.footer ?? ""} onChange={(e) => set("footer", e.target.value)} /></Field>
         <Field label="Terms & conditions" wide><textarea className="input h-20 py-2" value={inv.terms ?? ""} onChange={(e) => set("terms", e.target.value)} /></Field>
       </div>
-      <div className="mt-3"><Toggle label="Show payment QR on invoices" checked={inv.showQr !== false} onChange={(v) => set("showQr", v)} disabled={!editable} /></div>
+      <div className="mt-4 rounded-xl border border-line p-4 space-y-3">
+        <Toggle label="Show payment QR on bills" hint="Master switch — turn off to hide the scan-to-pay QR on every bill" checked={qrOn} onChange={(v) => set("showQr", v)} disabled={!editable} />
+        {qrOn && (
+          <div className="ml-1 pl-4 border-l-2 border-line space-y-2.5">
+            <p className="text-xs text-muted">Choose which bill types show the QR. It also hides automatically once a bill is fully paid.</p>
+            <Toggle label="Sale invoices" checked={qrTypes.sale !== false} onChange={(v) => setQrType("sale", v)} disabled={!editable} />
+            <Toggle label="Truck sale documents" hint="Bill of Supply & Challan" checked={qrTypes.truckSale !== false} onChange={(v) => setQrType("truckSale", v)} disabled={!editable} />
+            <Toggle label="Purchase vouchers" hint="Usually off — you're the one paying the supplier" checked={qrTypes.purchase === true} onChange={(v) => setQrType("purchase", v)} disabled={!editable} />
+          </div>
+        )}
+      </div>
     </TabCard>
   );
 }
@@ -181,19 +226,68 @@ function BillingTab({ form, patch, editable, onSave, saving }) {
   const cd = form.cd || {};
   const pf = form.prefixes || {};
   return (
-    <TabCard title="Billing & tax" subtitle="CD deduction rule and invoice numbering" icon={FiSliders} onSave={onSave} saving={saving} editable={editable}>
-      <div className="rounded-xl border border-line p-4 mb-4">
-        <Toggle label="Enable CD deduction rule" hint="Billers still choose to apply it per purchase bill" checked={cd.enabled !== false} onChange={(v) => patch("cd", { ...cd, enabled: v })} disabled={!editable} />
-        <div className="grid sm:grid-cols-2 gap-3 mt-3">
-          <Text label="CD rate (%)" type="number" value={cd.rate} onChange={(v) => patch("cd", { ...cd, rate: Number(v) })} />
-          <Text label="Applies above (₹)" type="number" value={cd.threshold} onChange={(v) => patch("cd", { ...cd, threshold: Number(v) })} />
+    <>
+      <TabCard title="Billing & tax" subtitle="CD deduction rule and invoice numbering" icon={FiSliders} onSave={onSave} saving={saving} editable={editable}>
+        <div className="rounded-xl border border-line p-4 mb-4">
+          <Toggle label="Enable CD deduction rule" hint="Billers still choose to apply it per purchase bill" checked={cd.enabled !== false} onChange={(v) => patch("cd", { ...cd, enabled: v })} disabled={!editable} />
+          <div className="grid sm:grid-cols-2 gap-3 mt-3">
+            <Text label="CD rate (%)" type="number" value={cd.rate} onChange={(v) => patch("cd", { ...cd, rate: Number(v) })} />
+            <Text label="Applies above (₹)" type="number" value={cd.threshold} onChange={(v) => patch("cd", { ...cd, threshold: Number(v) })} />
+          </div>
         </div>
+        <div className="grid sm:grid-cols-2 gap-3">
+          <Text label="Sale bill prefix" value={pf.sale} onChange={(v) => patch("prefixes", { ...pf, sale: v })} />
+          <Text label="Purchase bill prefix" value={pf.purchase} onChange={(v) => patch("prefixes", { ...pf, purchase: v })} />
+        </div>
+      </TabCard>
+      <div className="mt-4"><TruckNumberingCard editable={editable} /></div>
+    </>
+  );
+}
+
+/** Configure / reset the auto-incrementing truck Bill-of-Supply + Challan numbers. */
+function TruckNumberingCard({ editable }) {
+  const { data, saveCounters } = useApp();
+  const [form, setForm] = useState({ invoice: { prefix: "", next: 1 }, challan: { prefix: "", next: 1 } });
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    const s = data.serials || {};
+    setForm({
+      invoice: { prefix: s.invoice?.prefix || "", next: s.invoice?.next ?? 1 },
+      challan: { prefix: s.challan?.prefix || "", next: s.challan?.next ?? 1 },
+    });
+  }, [data.serials]);
+  const set = (doc, k, v) => setForm((f) => ({ ...f, [doc]: { ...f[doc], [k]: v } }));
+  const save = async () => {
+    setSaving(true);
+    try {
+      await saveCounters({
+        invoice: { prefix: form.invoice.prefix, next: Math.max(1, Number(form.invoice.next) || 1) },
+        challan: { prefix: form.challan.prefix, next: Math.max(1, Number(form.challan.next) || 1) },
+      });
+    } finally { setSaving(false); }
+  };
+  const rows = [["invoice", "Bill of Supply (Invoice)"], ["challan", "Challan"]];
+  return (
+    <Card className="p-5">
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div className="flex items-start gap-3">
+          <span className="grid place-items-center size-9 rounded-xl bg-surface-3 text-brand shrink-0"><FiHash /></span>
+          <div><h3 className="font-semibold text-ink">Truck document numbering</h3><p className="text-xs text-muted mt-0.5">Auto-increments on each truck sale · set a prefix or reset the next number</p></div>
+        </div>
+        {editable && <Button variant="primary" size="sm" icon={FiCheckCircle} onClick={save} disabled={saving}>{saving ? "Saving…" : "Save"}</Button>}
       </div>
-      <div className="grid sm:grid-cols-2 gap-3">
-        <Text label="Sale bill prefix" value={pf.sale} onChange={(v) => patch("prefixes", { ...pf, sale: v })} />
-        <Text label="Purchase bill prefix" value={pf.purchase} onChange={(v) => patch("prefixes", { ...pf, purchase: v })} />
-      </div>
-    </TabCard>
+      <fieldset disabled={!editable} className={cx(!editable && "opacity-70 pointer-events-none", "space-y-3")}>
+        {rows.map(([doc, label]) => (
+          <div key={doc} className="grid sm:grid-cols-[1fr_9rem_9rem] gap-3 items-end">
+            <p className="text-sm font-medium text-ink pb-2.5">{label}</p>
+            <Field label="Prefix"><input className="input" value={form[doc].prefix} onChange={(e) => set(doc, "prefix", e.target.value)} placeholder="e.g. INV-" /></Field>
+            <Field label="Next number"><input className="input" type="number" min="1" value={form[doc].next} onChange={(e) => set(doc, "next", e.target.value)} /></Field>
+          </div>
+        ))}
+      </fieldset>
+      <p className="text-xs text-muted mt-3">Next truck sale will use <b>{(form.invoice.prefix || "") + (form.invoice.next || 1)}</b> (invoice) and <b>{(form.challan.prefix || "") + (form.challan.next || 1)}</b> (challan).</p>
+    </Card>
   );
 }
 

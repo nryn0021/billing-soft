@@ -28,7 +28,7 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
   // Generate/resolve the payment QR (uploaded image or a real UPI QR) before printing.
   const printInvoice = useCallback(async (invoice, format = "a4") => {
     let qr;
-    try { qr = await makeInvoiceQr(settings, invoice); } catch { qr = ""; }
+    try { qr = await makeInvoiceQr(settings, invoice, format); } catch { qr = ""; }
     setPrintJob({ invoice, format, qr });
     setTimeout(() => window.print(), 260);
   }, [settings]);
@@ -55,6 +55,28 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
     return result.settings;
   }, [toast]);
 
+  // Truck-sale master data + document numbering. Each returns the refreshed bootstrap `data`.
+  const saveTransporter = useCallback(async (payload, id) => {
+    const result = id ? await api.updateTransporter(id, payload) : await api.createTransporter(payload);
+    setData(result.data);
+    toast(id ? "Transporter updated" : "Transporter saved", "success");
+    return result.data;
+  }, [toast]);
+
+  const saveVehicle = useCallback(async (payload, id) => {
+    const result = id ? await api.updateVehicle(id, payload) : await api.createVehicle(payload);
+    setData(result.data);
+    toast(id ? "Vehicle updated" : "Vehicle saved", "success");
+    return result.data;
+  }, [toast]);
+
+  const saveCounters = useCallback(async (patch) => {
+    const result = await api.updateCounters(patch);
+    setData(result.data);
+    toast("Numbering updated", "success");
+    return result.data;
+  }, [toast]);
+
   const refresh = useCallback(async () => {
     const result = await api.session();
     setUser(result.user);
@@ -68,9 +90,9 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
   const value = useMemo(() => ({
     user, data, setData, settings, permissions, can,
     toasts, toast, dismissToast,
-    printJob, printInvoice, saveBill, updateRate, saveSettings, refresh, logout,
+    printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters, refresh, logout,
     theme, setTheme,
-  }), [user, data, settings, permissions, can, toasts, toast, dismissToast, printJob, printInvoice, saveBill, updateRate, saveSettings, refresh, logout, theme, setTheme]);
+  }), [user, data, settings, permissions, can, toasts, toast, dismissToast, printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters, refresh, logout, theme, setTheme]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

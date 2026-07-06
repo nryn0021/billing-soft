@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import { FiCreditCard, FiDownload, FiMapPin, FiPhone, FiSearch, FiUsers, FiArrowUpRight, FiArrowDownLeft } from "react-icons/fi";
 import { useApp } from "../context/AppContext";
-import { Avatar, Badge, Button, Card, Drawer, EmptyState, Segmented, cx } from "../ui";
+import { Avatar, Badge, Button, Card, Drawer, EmptyState, Modal, Segmented, cx } from "../ui";
+import { BillDetailBody } from "../billing/BillDetailBody";
 import { exportCsv } from "../lib/export";
-import { formatDate, inr, inr2 } from "../lib/format";
+import { formatDate, formatDateLong, inr, inr2 } from "../lib/format";
 import { partyStatement } from "../lib/reports";
 import { useDebounced } from "../lib/hooks";
 
@@ -87,9 +88,15 @@ export default function Parties() {
 
 function PartyDrawer({ party, onClose, onBill }) {
   const { data } = useApp();
+  const [openTx, setOpenTx] = useState(null);
   const statement = party ? partyStatement(data.transactions, party.id) : [];
   const totalBilled = statement.reduce((s, x) => s + x.amount, 0);
+  const openBillDetail = (id) => {
+    const tx = data.transactions.find((t) => t.id === id);
+    if (tx) setOpenTx(tx);
+  };
   return (
+    <>
     <Drawer open={Boolean(party)} onClose={onClose} title={party?.name} subtitle={party ? `${party.id} · ${party.kind}` : ""} width="max-w-lg"
       footer={party && <Button variant="primary" onClick={() => { onClose(); onBill(party.kind === "supplier" ? "purchase" : "sale"); }}>New bill</Button>}>
       {party && (
@@ -114,10 +121,12 @@ function PartyDrawer({ party, onClose, onBill }) {
             {statement.length === 0 ? <p className="text-sm text-muted py-4 text-center">No transactions yet.</p> : (
               <ul className="rounded-xl border border-line divide-y divide-line overflow-hidden">
                 {statement.map((s) => (
-                  <li key={s.id} className="flex items-center gap-3 px-3 py-2.5 text-sm row-hover">
-                    <span className={cx("size-2 rounded-full shrink-0")} style={{ background: s.type === "sale" ? "var(--sale)" : "var(--purchase)" }} />
-                    <div className="min-w-0 grow"><span className="font-medium text-ink">{s.id}</span><span className="block text-xs text-muted">{s.product} · {formatDate(s.date)}</span></div>
-                    <div className="text-right"><span className="font-semibold text-ink tnum">{inr2.format(s.amount)}</span>{s.due > 0 && <span className="block text-xs text-danger">{inr.format(s.due)} due</span>}</div>
+                  <li key={s.id}>
+                    <button type="button" onClick={() => openBillDetail(s.id)} className="w-full flex items-center gap-3 px-3 py-2.5 text-sm row-hover text-left">
+                      <span className={cx("size-2 rounded-full shrink-0")} style={{ background: s.type === "sale" ? "var(--sale)" : "var(--purchase)" }} />
+                      <div className="min-w-0 grow"><span className="font-medium text-ink">{s.id}</span><span className="block text-xs text-muted">{s.product} · {formatDate(s.date)}</span></div>
+                      <div className="text-right"><span className="font-semibold text-ink tnum">{inr2.format(s.amount)}</span>{s.due > 0 && <span className="block text-xs text-danger">{inr.format(s.due)} due</span>}</div>
+                    </button>
                   </li>
                 ))}
               </ul>
@@ -126,6 +135,12 @@ function PartyDrawer({ party, onClose, onBill }) {
         </div>
       )}
     </Drawer>
+    <Modal open={Boolean(openTx)} onClose={() => setOpenTx(null)} size="lg"
+      title={openTx?.id} subtitle={openTx ? `${openTx.kind === "truck" ? "Truck sale · Bill of Supply" : openTx.type === "sale" ? "Sale invoice" : "Purchase voucher"} · ${formatDateLong(openTx.date)}` : ""}
+      footer={<Button variant="ghost" onClick={() => setOpenTx(null)}>Close</Button>}>
+      {openTx && <BillDetailBody tx={openTx} />}
+    </Modal>
+    </>
   );
 }
 

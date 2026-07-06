@@ -11,11 +11,14 @@ import {
   createBill,
   createResetToken,
   createSession,
+  createTransporter,
   createUser,
+  createVehicle,
   deleteSession,
   findTenantBySlug,
   findUser,
   getBootstrap,
+  getCounters,
   getSettings,
   listAudit,
   listStockMovements,
@@ -26,8 +29,11 @@ import {
   sessionUser,
   setUserActive,
   transferStock,
+  updateCounters,
   updateRate,
   updateSettings,
+  updateTransporter,
+  updateVehicle,
 } from "./database.js";
 import { closePool, pool } from "./db.js";
 import { newSessionToken, validatePassword, verifyPassword } from "./security.js";
@@ -292,6 +298,49 @@ async function api(request, response, url) {
     if (!requirePerm(user, response, "users.manage")) return;
     const input = await body(request);
     return json(response, 200, { users: await setUserActive(user, decodeURIComponent(activeMatch[1]), Boolean(input.active), reqCtx(request)) });
+  }
+
+  // ---- Truck-sale master data (transporters, vehicles) ----
+  // Billers already hold parties.create/edit; reuse those keys for these party-like masters.
+  if (url.pathname === "/api/transporters" && request.method === "POST") {
+    const user = await requireAuth(request, response, ["admin", "manager", "biller"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "parties.create")) return;
+    return json(response, 201, { data: await createTransporter(user, await body(request), reqCtx(request)) });
+  }
+  const transporterMatch = url.pathname.match(/^\/api\/transporters\/([^/]+)$/);
+  if (transporterMatch && request.method === "PATCH") {
+    const user = await requireAuth(request, response, ["admin", "manager", "biller"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "parties.edit")) return;
+    return json(response, 200, { data: await updateTransporter(user, decodeURIComponent(transporterMatch[1]), await body(request), reqCtx(request)) });
+  }
+  if (url.pathname === "/api/vehicles" && request.method === "POST") {
+    const user = await requireAuth(request, response, ["admin", "manager", "biller"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "parties.create")) return;
+    return json(response, 201, { data: await createVehicle(user, await body(request), reqCtx(request)) });
+  }
+  const vehicleMatch = url.pathname.match(/^\/api\/vehicles\/([^/]+)$/);
+  if (vehicleMatch && request.method === "PATCH") {
+    const user = await requireAuth(request, response, ["admin", "manager", "biller"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "parties.edit")) return;
+    return json(response, 200, { data: await updateVehicle(user, decodeURIComponent(vehicleMatch[1]), await body(request), reqCtx(request)) });
+  }
+
+  // ---- Document numbering (Bill of Supply invoice + Challan serials) ----
+  if (url.pathname === "/api/counters" && request.method === "GET") {
+    const user = await requireAuth(request, response);
+    if (!user) return;
+    if (!requirePerm(user, response, "settings.view")) return;
+    return json(response, 200, { serials: await getCounters(user) });
+  }
+  if (url.pathname === "/api/counters" && request.method === "PUT") {
+    const user = await requireAuth(request, response);
+    if (!user) return;
+    if (!requirePerm(user, response, "settings.manage")) return;
+    return json(response, 200, { data: await updateCounters(user, await body(request), reqCtx(request)) });
   }
 
   json(response, 404, { error: "API route not found." });

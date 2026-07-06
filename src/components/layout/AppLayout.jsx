@@ -4,13 +4,14 @@ import { AnimatePresence, motion } from "framer-motion";
 import {
   FiBarChart2, FiBell, FiCheck, FiChevronLeft, FiChevronRight, FiCommand, FiFileText, FiGrid, FiHome,
   FiInfo, FiLock, FiLogOut, FiMenu, FiPackage, FiPlus, FiSearch, FiSettings, FiShield, FiSliders,
-  FiUser, FiUserCheck, FiUsers, FiX, FiArrowDownLeft, FiArrowUpRight, FiChevronDown, FiCornerDownLeft,
+  FiUser, FiUserCheck, FiUsers, FiX, FiArrowDownLeft, FiArrowUpRight, FiChevronDown, FiCornerDownLeft, FiTruck,
 } from "react-icons/fi";
 import { api } from "../../api";
 import { useApp } from "../../context/AppContext";
 import { useHotkeys, useLocalStorage, useMediaQuery } from "../../lib/hooks";
 import { Avatar, Badge, Button, Field, IconButton, Modal, ThemeToggle, cx } from "../../ui";
 import { BillComposer } from "../../billing/BillComposer";
+import { TruckBillComposer } from "../../billing/TruckBillComposer";
 import { PrintInvoice } from "../../print/Invoice";
 import { inr, titleCase, txProductLabel } from "../../lib/format";
 
@@ -95,7 +96,11 @@ export default function AppLayout() {
         </footer>
       </div>
 
-      <AnimatePresence>{bill && <BillComposer type={bill.type} defaultBranch={branch} onClose={() => setBill(null)} />}</AnimatePresence>
+      <AnimatePresence>
+        {bill && (bill.type === "truck"
+          ? <TruckBillComposer defaultBranch={branch} onClose={() => setBill(null)} />
+          : <BillComposer type={bill.type} defaultBranch={branch} onClose={() => setBill(null)} />)}
+      </AnimatePresence>
       <CommandPalette open={paletteOpen} onClose={() => setPaletteOpen(false)} nav={nav} data={data} navigate={navigate} onNewBill={openBill} canBill={canBill} />
       {printJob && <PrintInvoice />}
     </div>
@@ -331,6 +336,7 @@ function CommandPalette({ open, onClose, nav, data, navigate, onNewBill, canBill
     if (canBill) {
       const actions = [
         { id: "new-sale", label: "New sale bill", icon: FiArrowUpRight, run: () => onNewBill("sale") },
+        { id: "new-truck", label: "New truck sale (Bill of Supply + Challan)", icon: FiTruck, run: () => onNewBill("truck") },
         { id: "new-purchase", label: "New purchase bill", icon: FiArrowDownLeft, run: () => onNewBill("purchase") },
       ].filter((a) => !query || a.label.toLowerCase().includes(query));
       if (actions.length) groups.push({ heading: "Actions", items: actions });

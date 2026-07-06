@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
-import { FiX, FiInbox, FiCheckCircle, FiAlertTriangle, FiInfo, FiMonitor, FiMoon, FiSun, FiArrowUpRight, FiTrendingUp, FiTrendingDown } from "react-icons/fi";
+import { FiX, FiInbox, FiCheckCircle, FiAlertTriangle, FiInfo, FiMonitor, FiMoon, FiSun, FiArrowUpRight, FiTrendingUp, FiTrendingDown, FiClock } from "react-icons/fi";
 import { useApp } from "./context/AppContext";
 import { num } from "./lib/format";
 import { useCountUp } from "./lib/hooks";
@@ -88,6 +88,26 @@ export function Avatar({ name, className, style }) {
   return <span className={cx("grid place-items-center rounded-xl bg-brand/10 text-brand font-bold text-[0.72rem] shrink-0", className)} style={{ background: "color-mix(in oklab, var(--brand) 14%, var(--surface))", ...style }}>{initials}</span>;
 }
 
+/* -------------------------------- live clock ------------------------------ */
+const CLOCK_DATE = new Intl.DateTimeFormat("en-IN", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+const CLOCK_TIME = new Intl.DateTimeFormat("en-IN", { hour: "2-digit", minute: "2-digit", second: "2-digit", hour12: true });
+
+/** Ticking date + time (updates every second). Used on the dashboard and in the bill window. */
+export function LiveClock({ className, compact }) {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return (
+    <span className={cx("inline-flex items-center gap-2 tnum", className)}>
+      <FiClock className="text-muted shrink-0" />
+      {!compact && <span className="text-ink-2">{CLOCK_DATE.format(now)}</span>}
+      <span className="font-semibold text-ink">{CLOCK_TIME.format(now)}</span>
+    </span>
+  );
+}
+
 /* ------------------------------- skeletons -------------------------------- */
 export function Skeleton({ className }) { return <div className={cx("skeleton", className)} />; }
 export function SkeletonRows({ rows = 5 }) {
@@ -118,7 +138,7 @@ function Overlay({ onClose, children, align = "center" }) {
 }
 
 export function Modal({ open, onClose, title, subtitle, children, footer, size = "md" }) {
-  const width = { sm: "max-w-md", md: "max-w-xl", lg: "max-w-3xl", xl: "max-w-5xl" }[size];
+  const width = { sm: "max-w-md", md: "max-w-xl", lg: "max-w-3xl", xl: "max-w-5xl", "2xl": "max-w-6xl", "3xl": "max-w-7xl" }[size];
   return (
     <AnimatePresence>
       {open && (
@@ -217,12 +237,20 @@ export function KpiCard({ label, value, format, icon: Icon, tone = "brand", delt
 
 export function Toggle({ checked, onChange, label, hint, disabled }) {
   return (
-    <label className={cx("flex items-center justify-between gap-3 py-1.5", disabled && "opacity-60")}>
+    <label className={cx("flex items-center justify-between gap-3 py-1.5", disabled ? "opacity-60" : "cursor-pointer")}>
       {(label || hint) && <span className="min-w-0"><span className="block text-sm text-ink">{label}</span>{hint && <span className="block text-xs text-muted">{hint}</span>}</span>}
       <button type="button" role="switch" aria-checked={checked} disabled={disabled} onClick={() => !disabled && onChange(!checked)}
-        className={cx("relative shrink-0 w-10 h-6 rounded-full transition-colors", checked ? "bg-brand" : "bg-surface-3 border border-line")}>
+        className="relative shrink-0 w-[2.75rem] h-[1.55rem] rounded-full transition-colors border"
+        style={{
+          // Off-track is a clearly-visible grey (was near-white in light mode); on-track is brand
+          // green with a soft glow. Both read distinctly in light and dark themes.
+          background: checked ? "var(--brand)" : "color-mix(in oklab, var(--muted) 55%, var(--surface))",
+          borderColor: checked ? "transparent" : "color-mix(in oklab, var(--muted) 35%, var(--line))",
+          boxShadow: checked ? "0 0 0 1px color-mix(in oklab, var(--brand) 40%, transparent), 0 2px 8px -2px var(--brand)" : "inset 0 1px 2px rgba(0,0,0,0.12)",
+        }}>
         <motion.span layout transition={{ type: "spring", stiffness: 500, damping: 35 }}
-          className="absolute top-0.5 size-5 rounded-full bg-white shadow-soft" style={{ left: checked ? "1.15rem" : "0.15rem" }} />
+          className="absolute top-[0.15rem] size-[1.25rem] rounded-full bg-white"
+          style={{ left: checked ? "calc(100% - 1.4rem)" : "0.15rem", boxShadow: "0 1px 3px rgba(16,24,20,0.35), 0 0 0 0.5px rgba(16,24,20,0.06)" }} />
       </button>
     </label>
   );

@@ -66,6 +66,21 @@ export const api = {
   async updateSettings(patch) {
     return request("/api/settings", { method: "PUT", body: JSON.stringify(patch) });
   },
+  async createTransporter(payload) {
+    return request("/api/transporters", { method: "POST", body: JSON.stringify(payload) });
+  },
+  async updateTransporter(id, payload) {
+    return request(`/api/transporters/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+  async createVehicle(payload) {
+    return request("/api/vehicles", { method: "POST", body: JSON.stringify(payload) });
+  },
+  async updateVehicle(id, payload) {
+    return request(`/api/vehicles/${encodeURIComponent(id)}`, { method: "PATCH", body: JSON.stringify(payload) });
+  },
+  async updateCounters(patch) {
+    return request("/api/counters", { method: "PUT", body: JSON.stringify(patch) });
+  },
   async adjustStock(payload) {
     return request("/api/inventory/adjust", { method: "POST", body: JSON.stringify(payload) });
   },

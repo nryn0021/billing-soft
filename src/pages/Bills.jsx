@@ -1,11 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useOutletContext, useSearchParams } from "react-router-dom";
 import {
-  FiArrowDownLeft, FiDownload, FiFileText, FiPlus, FiSearch, FiX,
+  FiArrowDownLeft, FiDownload, FiFileText, FiPlus, FiSearch, FiTruck, FiX,
 } from "react-icons/fi";
 import { useApp } from "../context/AppContext";
 import { Badge, Button, Card, Drawer, EmptyState, Segmented, cx } from "../ui";
-import { ReceiptActions } from "../print/ReceiptActions";
+import { BillDetailBody } from "../billing/BillDetailBody";
 import { exportCsv, exportJson } from "../lib/export";
 import { formatDateLong, inr, inr2, num, txProductLabel } from "../lib/format";
 import { useDebounced } from "../lib/hooks";
@@ -20,6 +20,7 @@ const BILL_COLUMNS = [
   { label: "Rate", value: (r) => r.rate },
   { label: "Gross", value: (r) => r.gross },
   { label: "CD", value: (r) => r.cdDeduction },
+  { label: "Discount", value: (r) => r.discount },
   { label: "Net", value: (r) => r.netAmount },
   { label: "Paid", value: (r) => r.paidAmount },
   { label: "Due", value: (r) => r.dueAmount },
@@ -81,7 +82,8 @@ export default function Bills() {
               </>
             )}
           </div>
-          <Button variant="ghost" icon={FiArrowDownLeft} onClick={() => openBill("purchase")} className="hidden sm:inline-flex">Purchase</Button>
+          <Button variant="info" icon={FiTruck} onClick={() => openBill("truck")} className="hidden sm:inline-flex">Truck sale</Button>
+          <Button variant="purchase" icon={FiArrowDownLeft} onClick={() => openBill("purchase")} className="hidden sm:inline-flex">Purchase</Button>
           <Button variant="primary" icon={FiPlus} onClick={() => openBill("sale")}>New sale</Button>
         </div>
       </div>
@@ -128,34 +130,9 @@ export default function Bills() {
 
 function BillDrawer({ tx, onClose }) {
   return (
-    <Drawer open={Boolean(tx)} onClose={onClose} title={tx?.id} subtitle={tx ? `${tx.type === "sale" ? "Sale invoice" : "Purchase voucher"} · ${formatDateLong(tx.date)}` : ""}
+    <Drawer open={Boolean(tx)} onClose={onClose} title={tx?.id} subtitle={tx ? `${tx.kind === "truck" ? "Truck sale · Bill of Supply" : tx.type === "sale" ? "Sale invoice" : "Purchase voucher"} · ${formatDateLong(tx.date)}` : ""}
       footer={tx && <Button variant="ghost" onClick={onClose}>Close</Button>}>
-      {tx && (
-        <div className="space-y-5">
-          <ReceiptActions invoice={tx} />
-          <div className="flex items-center gap-3">
-            <span className={cx("grid place-items-center size-11 rounded-xl text-brand-ink font-bold", tx.type === "sale" ? "bg-sale" : "bg-purchase")} style={{ background: tx.type === "sale" ? "var(--sale)" : "var(--purchase)" }}><FiFileText /></span>
-            <div><p className="font-semibold text-ink">{tx.party}</p><p className="text-xs text-muted">{tx.partyPhone} · {tx.branch}</p></div>
-          </div>
-          <div className="rounded-xl border border-line divide-y divide-line">
-            {[
-              ["Product", txProductLabel(tx)],
-              ["Weight", `${num.format(tx.totalKg)} kg (${tx.quantity} ${tx.unit})`],
-              ["Rate / kg", inr2.format(tx.rate)],
-              ["Gross amount", inr2.format(tx.gross)],
-              ...(tx.cdDeduction ? [["CD deduction", `- ${inr2.format(tx.cdDeduction)}`]] : []),
-              ["Net amount", inr2.format(tx.netAmount)],
-              ["Paid", inr2.format(tx.paidAmount)],
-              ["Balance due", inr2.format(tx.dueAmount)],
-              ["Payment method", tx.paymentMethod],
-              ["Created by", tx.createdBy],
-            ].map(([k, v]) => (
-              <div key={k} className="flex items-center justify-between px-4 py-2.5 text-sm"><span className="text-muted">{k}</span><span className="font-medium text-ink tnum text-right">{v}</span></div>
-            ))}
-          </div>
-          {tx.partyAddress && <p className="text-xs text-muted">Address: {tx.partyAddress}</p>}
-        </div>
-      )}
+      {tx && <BillDetailBody tx={tx} />}
     </Drawer>
   );
 }

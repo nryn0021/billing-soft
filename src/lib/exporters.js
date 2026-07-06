@@ -79,9 +79,23 @@ function triggerDownload(blob, name) {
   setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
+// Small coloured payment-status stamp for the A4 PDF. jsPDF's core font can't render ₹,
+// so the rupee sign is swapped for "Rs " here.
+function drawPdfStamp(doc, ps, x, y, w) {
+  const col = ps.state === "paid" ? [10, 143, 10] : ps.state === "partial" ? [209, 122, 21] : [204, 59, 48];
+  const h = 15;
+  doc.setDrawColor(col[0], col[1], col[2]); doc.setLineWidth(0.9);
+  doc.roundedRect(x, y, w, h, 2, 2);
+  doc.setTextColor(col[0], col[1], col[2]); doc.setFont("helvetica", "bold"); doc.setFontSize(13);
+  doc.text(ps.label.replace("₹", "Rs "), x + w / 2, y + 7, { align: "center" });
+  doc.setFontSize(7); doc.text(String(ps.sub).toUpperCase(), x + w / 2, y + 11.5, { align: "center" });
+  doc.setTextColor(19, 29, 24); doc.setDrawColor(19, 29, 24); doc.setLineWidth(0.5); doc.setFont("helvetica", "normal");
+}
+
 /** A4 invoice PDF drawn with jsPDF (crisp vector text + embedded QR). */
 export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }) {
   const { jsPDF } = await import("jspdf");
+  const { paymentStamp } = await import("./format");
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const isSale = invoice.type === "sale";
   const b = settings.business || {}; const bank = settings.bank || {};
@@ -104,7 +118,7 @@ export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }
   doc.text(isSale ? "Billed to" : "Received from", M, y);
   doc.text("Pay to", 120, y);
   doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(60);
-  doc.text([invoice.party, invoice.partyAddress || "", invoice.partyPhone || "", `Payment: ${invoice.paymentMethod}`], M, y + 6);
+  doc.text([invoice.party, invoice.partyAddress || "", invoice.partyPhone || "", invoice.partyGstin ? `GSTIN: ${invoice.partyGstin}` : "", `Payment: ${invoice.paymentMethod}`].filter(Boolean), M, y + 6);
   doc.text([`${bank.name || ""}`, `A/C ${bank.account || ""}`, `IFSC ${bank.ifsc || ""}`, `Branch ${bank.branch || ""}`], 120, y + 6);
 
   y += 34;
@@ -121,6 +135,7 @@ export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }
   const rowP = (label, val, bold) => { doc.setFont("helvetica", bold ? "bold" : "normal"); doc.text(label, tx, y); doc.text(val, 210 - M - 2, y, { align: "right" }); y += 6; };
   rowP("Gross amount", inr(invoice.gross).replace("INR ", ""));
   if (invoice.cdDeduction > 0) rowP("CD deduction", "- " + inr(invoice.cdDeduction).replace("INR ", ""));
+  if (invoice.discount > 0) rowP("Discount", "- " + inr(invoice.discount).replace("INR ", ""));
   doc.setDrawColor(19, 29, 24); doc.line(tx, y - 2, 210 - M, y - 2);
   rowP(`Net ${isSale ? "receivable" : "payable"}`, inr(invoice.netAmount).replace("INR ", ""), true);
   rowP("Paid", inr(invoice.paidAmount).replace("INR ", ""));
@@ -128,13 +143,23 @@ export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }
 
   doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(90);
   doc.text(`Amount in words: ${amountInWords(Math.round(invoice.netAmount))} Rupees Only`, M, y);
-  if (qrDataUrl && settings.invoice?.showQr !== false) {
-    try { doc.addImage(qrDataUrl, "PNG", M, y + 6, 26, 26); doc.text("Scan to pay", M + 30, y + 12); doc.text(`UPI: ${bank.upi || ""}`, M + 30, y + 17); } catch { /* ignore bad image */ }
+  if (invoice.remarks) { y += 5; doc.text(`Remarks: ${invoice.remarks}`, M, y, { maxWidth: 120 }); }
+  // qrDataUrl is already "" when the QR is switched off for this bill type or the bill is
+  // fully paid (makeInvoiceQr gates it), so a truthy value means "show it".
+  if (qrDataUrl) {
+    try { doc.addImage(qrDataUrl, "PNG", M, y + 6, 26, 26); doc.text(`Scan to pay ${inr(invoice.dueAmount).replace("INR ", "Rs ")}`, M + 30, y + 12); doc.text(`UPI: ${bank.upi || ""}`, M + 30, y + 17); } catch { /* ignore bad image */ }
   }
+  // Payment-status stamp (coloured box) on the right, aligned with the QR row.
+  drawPdfStamp(doc, paymentStamp(invoice), 132, y + 6, 210 - M - 132);
   y += 44;
   doc.setFontSize(7); doc.setTextColor(120);
   doc.text(settings.invoice?.terms || "", M, y, { maxWidth: 120 });
+  // Proprietor signature block, bottom-right.
+  doc.setFontSize(8); doc.setTextColor(60);
   doc.text(`For ${b.name || ""}`, 210 - M, y, { align: "right" });
-  doc.text(settings.invoice?.signatureName || "Authorised signatory", 210 - M, y + 10, { align: "right" });
+  doc.setFont("helvetica", "italic"); doc.setFontSize(13); doc.setTextColor(20, 60, 40);
+  doc.text(b.owner || "", 210 - M, y + 9, { align: "right" });
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(60);
+  doc.text(`${b.owner || "Authorised signatory"}, Proprietor`, 210 - M, y + 14, { align: "right" });
   doc.save(`${invoice.id}.pdf`);
 }

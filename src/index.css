@@ -122,6 +122,12 @@ input[type="number"] { -moz-appearance: textfield; }
 a { color: inherit; text-decoration: none; }
 h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.02em; margin: 0; }
 :focus-visible { outline: none; box-shadow: var(--ring); border-radius: 10px; }
+/* Composite (affix) inputs let the WRAPPER own the focus ring via :focus-within. The inner
+   <input> must NOT paint its own ring — otherwise it shows as a second rounded outline inside
+   the field. This rule is intentionally UNLAYERED so it overrides the base :focus-visible above
+   (layered component styles would otherwise lose to it regardless of specificity). */
+.input-affix > input:focus,
+.input-affix > input:focus-visible { box-shadow: none !important; outline: none; border-radius: 0; }
 
 ::selection { background: color-mix(in oklab, var(--brand) 26%, transparent); }
 
@@ -162,7 +168,8 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.02em; marg
     border: 1px solid transparent;
     transition: transform 0.12s var(--ease-out), background 0.18s, border-color 0.18s, box-shadow 0.18s, color 0.18s;
   }
-  .btn:active { transform: translateY(1px) scale(0.99); }
+  .btn:hover:not(:disabled) { transform: translateY(-1px); }
+  .btn:active:not(:disabled) { transform: translateY(1px) scale(0.95); transition-duration: 0.05s; }
   .btn:disabled { opacity: 0.55; }
   .btn-primary { background: var(--brand); color: var(--brand-ink); box-shadow: 0 8px 20px -10px color-mix(in oklab, var(--brand) 80%, black); }
   .btn-primary:hover:not(:disabled) { background: var(--brand-2); }
@@ -172,6 +179,12 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.02em; marg
   .btn-subtle:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
   .btn-danger { background: color-mix(in oklab, var(--danger) 14%, var(--surface)); color: var(--danger); border-color: color-mix(in oklab, var(--danger) 26%, transparent); }
   .btn-danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 22%, var(--surface)); }
+  /* Solid blue call-to-action — used for the "Truck sale" bill button so it stands apart. */
+  .btn-info { background: var(--info); color: #fff; box-shadow: 0 8px 20px -10px color-mix(in oklab, var(--info) 80%, black); }
+  .btn-info:hover:not(:disabled) { background: color-mix(in oklab, var(--info) 88%, black); }
+  /* Solid amber — the "Purchase" button, so it pops out like the primary "New sale". */
+  .btn-purchase { background: var(--purchase); color: #fff; box-shadow: 0 8px 20px -10px color-mix(in oklab, var(--purchase) 80%, black); }
+  .btn-purchase:hover:not(:disabled) { background: color-mix(in oklab, var(--purchase) 88%, black); }
   .btn-icon { width: 2.5rem; padding: 0; }
   .btn-sm { height: 2.1rem; padding: 0 0.7rem; font-size: 0.8rem; }
 
@@ -185,13 +198,17 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.02em; marg
   .input:focus { outline: none; background: var(--surface); border-color: var(--brand); box-shadow: var(--ring); }
   select.input { appearance: none; background-image: none; cursor: pointer; }
 
-  /* Composite input (currency prefix + field + action). The WRAPPER owns the focus
-     ring via :focus-within, so the inner <input> doesn't paint its own ring — that
-     inner ring was being clipped by overflow:hidden into a curved sliver near the cursor. */
-  .input-affix { display: flex; align-items: center; padding: 0; overflow: hidden; }
+  /* Composite input (currency prefix + field + trailing action button). The WRAPPER owns the
+     focus ring via :focus-within; the inner ring suppression lives unlayered above. No
+     overflow:hidden here — clipping was what produced the earlier "curved sliver" artifact;
+     instead the trailing button rounds its own right corners (rounded-r-* utility). */
+  .input-affix { display: flex; align-items: stretch; padding: 0; }
   .input-affix:focus-within { outline: none; background: var(--surface); border-color: var(--brand); box-shadow: var(--ring); }
-  .input-affix > input { background: transparent; }
-  .input-affix > input:focus, .input-affix > input:focus-visible { outline: none; box-shadow: none; }
+  .input-affix > input { background: transparent; border-radius: inherit; min-width: 0; }
+  /* Prefix/suffix adornments (₹, tag icon, unit) must be vertically CENTERED against the
+     field — they were sitting slightly high because plain inline spans don't center in a
+     stretch flexbox. This centres every affix adornment consistently. */
+  .input-affix > span { display: inline-flex; align-items: center; }
 
   .field-label { display: block; font-size: 0.72rem; font-weight: 600; letter-spacing: 0.02em; color: var(--ink-2); margin-bottom: 0.4rem; text-transform: none; }
 
@@ -304,3 +321,64 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.02em; marg
 .invoice-sheet .inv-sign { display: flex; justify-content: space-between; margin-top: 28px; padding-top: 12px; }
 .invoice-sheet .inv-sign .line { border-top: 1px solid var(--i-ink); width: 180px; padding-top: 6px; font-size: 11px; color: var(--i-soft); text-align: center; }
 .invoice-sheet .inv-note { text-align: center; font-size: 10px; color: var(--i-soft); margin-top: 14px; }
+
+/* Payment-status rubber stamp — printed on every bill. Green = settled, orange = part-paid,
+   red = unpaid. Fixed hex (not theme tokens) so it prints identically in any theme; the
+   double border + tilt read as a real inked stamp. print-color-adjust:exact forces the ink. */
+.pay-stamp {
+  display: inline-flex; flex-direction: column; align-items: center; justify-content: center;
+  border: 3px double currentColor; border-radius: 10px; padding: 5px 18px;
+  transform: rotate(-7deg); text-transform: uppercase; text-align: center;
+  font-family: var(--font-display); line-height: 1;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.pay-stamp .ps-main { font-size: 21px; font-weight: 800; letter-spacing: 0.02em; }
+.pay-stamp .ps-sub { font-size: 8.5px; font-weight: 700; letter-spacing: 0.16em; margin-top: 4px; opacity: 0.9; }
+.pay-stamp.compact { padding: 3px 12px; border-width: 2px; transform: rotate(-6deg); }
+.pay-stamp.compact .ps-main { font-size: 15px; }
+.pay-stamp.compact .ps-sub { font-size: 7px; margin-top: 2px; }
+.pay-stamp.paid { color: #0a8f0a; }
+.pay-stamp.partial { color: #cf7a12; }
+.pay-stamp.unpaid { color: #cc3b30; }
+
+/* Handwritten-style proprietor signature drawn above the signatory line on every bill. */
+.sig-name { font-family: "Segoe Script", "Snell Roundhand", "Savoye LET", "Bradley Hand", "Comic Sans MS", cursive; font-size: 22px; line-height: 1; color: #0f2e1f; letter-spacing: 0.01em; }
+.invoice-sheet .inv-sign .sig-name { display: block; margin-bottom: 6px; }
+
+/* =================================================================== *
+ *  TRUCK-SALE DOCUMENTS — GST "Bill of Supply" + transport "Challan".
+ *  Bordered layouts that mirror the mill's paper forms field-for-field.
+ * =================================================================== */
+.doc-sheet {
+  /* Subtle, printer-friendly light-pink shading for the truck Bill of Supply + Challan.
+     print-color-adjust:exact forces the tint (bands, QR) to actually print — without it
+     browsers drop background colours; the print dialog's "Background graphics" toggle must
+     also be on. Kept very light so it stays legible and ink-cheap on any printer. */
+  --d-ink: #10130f; --d-soft: #4a544c; --d-line: #101010; --d-band: #fae2e9;
+  width: 100%; max-width: 210mm; margin: 0 auto; padding: 4mm;
+  background: #fdf3f6; color: var(--d-ink); font-family: var(--font-sans); font-size: 11.5px; line-height: 1.35;
+  -webkit-print-color-adjust: exact; print-color-adjust: exact;
+}
+.doc-sheet .band, .doc-sheet .goods th, .doc-sheet .kbox { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+.doc-sheet .frame { border: 1.5px solid var(--d-line); }
+.doc-sheet .center { text-align: center; }
+.doc-sheet .b { font-weight: 700; }
+.doc-sheet table { width: 100%; border-collapse: collapse; }
+.doc-sheet td, .doc-sheet th { border: 1px solid var(--d-line); padding: 3px 6px; vertical-align: top; }
+.doc-sheet .noborder td, .doc-sheet .noborder th { border: 0; }
+.doc-sheet .r { text-align: right; }
+.doc-sheet .doc-title { font-family: var(--font-display); font-size: 24px; font-weight: 800; letter-spacing: 0.01em; }
+.doc-sheet .doc-sub { font-size: 10px; color: var(--d-soft); }
+.doc-sheet .hindi { font-size: 12px; }
+.doc-sheet .band { background: var(--d-band); }
+.doc-sheet .kbox { padding: 5px 8px; border: 1px solid var(--d-line); }
+.doc-sheet .kbox .k { color: var(--d-soft); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.05em; }
+.doc-sheet .goods th { background: var(--d-band); font-size: 9.5px; text-transform: uppercase; letter-spacing: 0.04em; text-align: left; }
+.doc-sheet .goods td { height: 20px; }
+.doc-sheet .tall td { height: 96px; vertical-align: top; }
+.doc-sheet .grand { font-size: 15px; font-weight: 800; }
+.doc-sheet .foot-sign { text-align: right; padding-top: 6px; }
+.doc-sheet .stamp { border-top: 1px solid var(--d-line); margin-top: 26px; padding-top: 5px; text-align: center; font-size: 10px; color: var(--d-soft); }
+.doc-sheet .words { min-height: 30px; }
+/* Two copies of the challan on one page (buyer + office), separated for the tear line. */
+.doc-sheet + .doc-sheet { margin-top: 6mm; }

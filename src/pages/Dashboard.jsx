@@ -2,10 +2,10 @@ import { useMemo, useState } from "react";
 import { Link, useOutletContext } from "react-router-dom";
 import {
   FiActivity, FiAlertTriangle, FiArrowDownLeft, FiArrowRight, FiBox, FiClock,
-  FiCreditCard, FiEdit2, FiPackage, FiPlus, FiShoppingBag, FiTrendingUp, FiUsers,
+  FiCreditCard, FiEdit2, FiPackage, FiPlus, FiShoppingBag, FiTrendingUp, FiTruck, FiUsers,
 } from "react-icons/fi";
 import { useApp } from "../context/AppContext";
-import { Badge, BarList, Button, Card, EmptyState, GroupedBars, KpiCard, PanelHeader, Segmented, cx } from "../ui";
+import { Badge, BarList, Button, Card, EmptyState, GroupedBars, KpiCard, LiveClock, PanelHeader, Segmented, cx } from "../ui";
 import { SERIES_COLORS, compactInr, formatDate, initials, inr, num, timeAgo, txProductLabel } from "../lib/format";
 import { dailySeries, inventoryValuation, productBreakdown, stockAlerts, totals } from "../lib/reports";
 
@@ -45,8 +45,10 @@ export default function Dashboard() {
           <h2 className="text-xl sm:text-2xl font-bold text-ink">{greeting}, {user.displayName.split(" ")[0]} 👋</h2>
           <p className="text-sm text-muted mt-0.5">Here’s what’s happening at your mill {branch === "All branches" ? "today" : `in ${branch}`}.</p>
         </div>
-        <div className="flex gap-2">
-          <Button variant="ghost" icon={FiArrowDownLeft} onClick={() => openBill("purchase")} className="hidden sm:inline-flex">Purchase</Button>
+        <div className="flex items-center gap-2 sm:gap-3">
+          <LiveClock className="hidden md:inline-flex text-sm rounded-xl bg-surface-2 border border-line px-3 py-2" />
+          <Button variant="info" icon={FiTruck} onClick={() => openBill("truck")} className="hidden sm:inline-flex">Truck sale</Button>
+          <Button variant="purchase" icon={FiArrowDownLeft} onClick={() => openBill("purchase")} className="hidden sm:inline-flex">Purchase</Button>
           <Button variant="primary" icon={FiPlus} onClick={() => openBill("sale")}>New sale</Button>
         </div>
       </div>

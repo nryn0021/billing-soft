@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FiDownload, FiFileText, FiImage, FiPrinter, FiShare2 } from "react-icons/fi";
+import { FiDownload, FiFileText, FiImage, FiPrinter, FiShare2, FiTruck } from "react-icons/fi";
 import { useApp } from "../context/AppContext";
 import { Button, Segmented } from "../ui";
 import { amountInWords } from "../lib/format";
@@ -18,23 +18,59 @@ export function ReceiptActions({ invoice }) {
   };
 
   const genReceipt = async () => {
-    const qr = await makeInvoiceQr(settings, invoice);
+    const qr = await makeInvoiceQr(settings, invoice, "thermal");
     return renderThermalReceipt(invoice, settings, qr, { widthMm: Number(width), amountInWords });
   };
 
+  // Rich, human-readable WhatsApp caption sent alongside the bill image. Uses WhatsApp
+  // markdown (*bold*) and includes the full money breakdown plus date & time.
   const caption = () => {
-    const kind = invoice.type === "sale" ? "🧾 Sale Bill" : "📦 Purchase Bill";
-    return `${kind}\nBill No: ${invoice.id}\nParty: ${invoice.party}\nAmount: ₹${Math.round(invoice.netAmount).toLocaleString("en-IN")}\nDate: ${new Date(invoice.date).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}\n\n${settings.business?.name || ""}`;
+    const isSale = invoice.type === "sale";
+    const money = (v) => `₹${Number(v || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const when = new Date(invoice.date).toLocaleString("en-IN", { dateStyle: "full", timeStyle: "short" });
+    const lines = [
+      `*${settings.business?.name || "Bill"}*`,
+      isSale ? "🧾 *SALE BILL*" : "📦 *PURCHASE BILL*",
+      "",
+      `*Bill No:*  ${invoice.id}`,
+      `*Date:*  ${when}`,
+      `*${isSale ? "Customer" : "Supplier"}:*  ${invoice.party}${invoice.partyPhone ? `  (${invoice.partyPhone})` : ""}`,
+      "",
+      `*Item:*  ${invoice.product}${invoice.productHindi ? ` / ${invoice.productHindi}` : ""}`,
+      `*Weight:*  ${invoice.totalKg} kg  ×  ₹${invoice.rate}/kg`,
+      `*Gross:*  ${money(invoice.gross)}`,
+    ];
+    if (invoice.cdDeduction > 0) lines.push(`*CD deduction:*  − ${money(invoice.cdDeduction)}`);
+    if (invoice.discount > 0) lines.push(`*Discount:*  − ${money(invoice.discount)}`);
+    lines.push(
+      `*Net ${isSale ? "receivable" : "payable"}:*  ${money(invoice.netAmount)}`,
+      `*Paid:*  ${money(invoice.paidAmount)}    *Balance due:*  ${money(invoice.dueAmount)}`,
+      `*Payment mode:*  ${invoice.paymentMethod}`,
+      "",
+      settings.invoice?.footer || "Thank you for your business.",
+    );
+    return lines.join("\n");
   };
 
   const a4Pdf = withBusy("a4pdf", async () => {
     const { invoicePdf } = await import("../lib/exporters");
-    const qr = await makeInvoiceQr(settings, invoice);
+    const qr = await makeInvoiceQr(settings, invoice, "a4");
     await invoicePdf(invoice, settings, qr, { amountInWords });
   });
 
+  const isTruck = invoice.kind === "truck" || invoice.meta?.kind === "truck";
+
   return (
     <div className="rounded-xl border border-line p-3 space-y-3">
+      {isTruck && (
+        <div className="rounded-lg border border-info/25 bg-info/5 p-2.5 space-y-2">
+          <p className="text-xs font-semibold text-info flex items-center gap-1.5"><FiTruck /> Truck sale documents</p>
+          <div className="grid grid-cols-2 gap-2">
+            <Button variant="info" size="sm" icon={FiFileText} onClick={() => printInvoice(invoice, "gst")}>Bill of Supply</Button>
+            <Button variant="ghost" size="sm" icon={FiPrinter} onClick={() => printInvoice(invoice, "challan")}>Challan</Button>
+          </div>
+        </div>
+      )}
       <div className="flex items-center justify-between">
         <p className="text-sm font-semibold text-ink">Print & share</p>
         <Segmented size="sm" options={[{ value: "58", label: "58mm" }, { value: "80", label: "80mm" }]} value={width} onChange={setWidth} />

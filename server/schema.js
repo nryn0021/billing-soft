@@ -153,6 +153,7 @@ export const parties = pgTable(
     balanceType: text("balance_type").notNull().default("debtor"),
     bankAccountEncrypted: text("bank_account_encrypted"),
     bankIfsc: text("bank_ifsc"),
+    gstin: text("gstin"), // buyer/supplier GSTIN — nullable, additive (migration-safe)
     createdAt: createdAt(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
@@ -183,11 +184,17 @@ export const bills = pgTable(
     createdBy: uuid("created_by").references(() => users.id),
     grossPaise: paise("gross_paise").notNull(),
     deductionPaise: paise("deduction_paise").notNull().default(0),
+    discountPaise: paise("discount_paise").notNull().default(0),
     netPaise: paise("net_paise").notNull(),
     paidPaise: paise("paid_paise").notNull().default(0),
     duePaise: paise("due_paise").notNull().default(0),
     paymentMethod: text("payment_method").notNull(),
     status: text("status").notNull().default("posted"),
+    // Extra document data for detailed "truck sale" bills (GST Bill of Supply + transport
+    // Challan): consignee GSTIN, HSN, vehicle/driver/transport, freight & bhara figures, etc.
+    // Null for ordinary sale/purchase bills. Additive & nullable → migration-safe.
+    meta: jsonb("meta"),
+    remarks: text("remarks"), // free-text note shown on the bill/popup — nullable, additive
     createdAt: createdAt(),
   },
   (t) => [
@@ -336,6 +343,73 @@ export const passwordResets = pgTable(
   (t) => [uniqueIndex("password_resets_token_unique").on(t.tokenHash)],
 );
 
+// Per-tenant auto-increment counters for truck-sale document numbers (Bill of Supply
+// "Invoice No." + transport "Challan No."). Numbers are assigned atomically inside the
+// bill transaction via UPDATE ... RETURNING; the admin can set the prefix / next number.
+export const billCounters = pgTable(
+  "bill_counters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    docType: text("doc_type").notNull(), // 'invoice' | 'challan'
+    prefix: text("prefix").notNull().default(""),
+    lastNumber: bigint("last_number", { mode: "number" }).notNull().default(0),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("bill_counters_tenant_type_unique").on(t.tenantId, t.docType),
+    check("bill_counters_type_check", sql`${t.docType} in ('invoice','challan')`),
+  ],
+);
+
+// Master list of transporters (name + phone) so operators pick instead of retyping.
+export const transporters = pgTable(
+  "transporters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    displayId: text("display_id").notNull(), // readable id, e.g. TRP-1001
+    name: text("name").notNull(),
+    phone: text("phone"),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("transporters_tenant_display_unique").on(t.tenantId, t.displayId),
+    index("idx_transporters_name").on(t.tenantId, t.name),
+  ],
+);
+
+// Master list of vehicles with linked owner + driver details. Aadhaar is encrypted at
+// rest (like bank accounts). Selecting a vehicle auto-fills owner/driver on the composer.
+export const vehicles = pgTable(
+  "vehicles",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    displayId: text("display_id").notNull(), // readable id, e.g. VEH-1001
+    vehicleNo: text("vehicle_no").notNull(),
+    ownerName: text("owner_name"),
+    ownerMob: text("owner_mob"),
+    driverName: text("driver_name"),
+    driverMob: text("driver_mob"),
+    dlNo: text("dl_no"),
+    aadhaarEncrypted: text("aadhaar_encrypted"),
+    createdAt: createdAt(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("vehicles_tenant_display_unique").on(t.tenantId, t.displayId),
+    uniqueIndex("vehicles_tenant_vehicleno_unique").on(t.tenantId, t.vehicleNo),
+  ],
+);
+
 export const schema = {
   tenants,
   branches,
@@ -351,4 +425,7 @@ export const schema = {
   auditEvents,
   appSettings,
   passwordResets,
+  billCounters,
+  transporters,
+  vehicles,
 };

@@ -5,6 +5,21 @@ export const inr2 = new Intl.NumberFormat("en-IN", { style: "currency", currency
 export const num = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 2 });
 export const num0 = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 });
 
+// Payment-status "rubber stamp" shown on every bill. Reads the bill's own money fields
+// (all in rupees on the mapped invoice) and returns what the stamp should say + which
+// colour state to paint it: green when settled, orange when part-paid, red when nothing
+// is paid yet. `amount` is the balance still due (0 when fully paid).
+export function paymentStamp(invoice) {
+  // Same fallback chain as qr.js dueRupees() so the stamp and the scan-to-pay QR never
+  // disagree (e.g. a "PAID" stamp next to a live QR) when dueAmount is absent.
+  const due = Math.max(0, Math.round(invoice?.dueAmount ?? invoice?.netAmount ?? 0));
+  const paid = Math.max(0, Math.round(invoice?.paidAmount ?? 0));
+  const method = (invoice?.paymentMethod || "").trim();
+  if (due <= 0) return { state: "paid", label: "PAID", sub: method ? `via ${method}` : "Paid in full", amount: 0 };
+  if (paid > 0) return { state: "partial", label: `${inr.format(due)} DUE`, sub: "Partially paid", amount: due };
+  return { state: "unpaid", label: `${inr.format(due)} DUE`, sub: "Payment pending", amount: due };
+}
+
 // Compact money for KPI tiles: ₹1.2L, ₹3.4Cr, etc.
 export function compactInr(value) {
   const v = Number(value) || 0;
@@ -18,9 +33,9 @@ export function compactInr(value) {
 
 export const kgPerUnit = { kg: 1, quintal: 100, tonne: 1000 };
 export const UNITS = [
-  { value: "kg", label: "Kilogram (kg)" },
-  { value: "quintal", label: "Quintal (100 kg)" },
-  { value: "tonne", label: "Tonne (1,000 kg)" },
+  { value: "kg", short: "kg", label: "Kilogram (kg)" },
+  { value: "quintal", short: "qtl", label: "Quintal (100 kg)" },
+  { value: "tonne", short: "ton", label: "Tonne (1,000 kg)" },
 ];
 export const PAYMENT_METHODS = ["Cash", "Online / Bank", "Split payment", "Credit"];
 

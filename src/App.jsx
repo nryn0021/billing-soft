@@ -1,7 +1,7 @@
 import { Suspense, lazy, useEffect, useState } from "react";
-import { BrowserRouter, Navigate, Route, Routes } from "react-router-dom";
+import { createBrowserRouter, Navigate, RouterProvider } from "react-router-dom";
 import { api } from "./api";
-import { AppProvider } from "./context/AppContext";
+import { AppProvider, useApp } from "./context/AppContext";
 import { Toaster } from "./ui";
 import { LoadingScreen, LoginScreen, PasswordChangeScreen } from "./components/AuthScreen";
 import AppLayout from "./components/layout/AppLayout";
@@ -20,9 +20,33 @@ function PageFallback() {
   return <div className="p-8 space-y-4 max-w-5xl mx-auto"><div className="skeleton h-10 w-64" /><div className="grid grid-cols-2 lg:grid-cols-4 gap-4">{Array.from({ length: 4 }).map((_, i) => <div key={i} className="skeleton h-28" />)}</div><div className="skeleton h-72" /></div>;
 }
 
-function RequirePerm({ user, perm, children }) {
+// Reads the signed-in user from context (routes live inside AppProvider), so the router
+// can be defined once at module scope — required for the data-router APIs (e.g. useBlocker).
+function RequirePerm({ perm, children }) {
+  const { user } = useApp();
   return (user.permissions || []).includes(perm) ? children : <Navigate to="/" replace />;
 }
+
+const page = (Comp) => <Suspense fallback={<PageFallback />}><Comp /></Suspense>;
+const guarded = (perm, Comp) => <RequirePerm perm={perm}>{page(Comp)}</RequirePerm>;
+
+const router = createBrowserRouter([
+  {
+    element: <AppLayout />,
+    children: [
+      { index: true, element: page(Dashboard) },
+      { path: "bills", element: page(Bills) },
+      { path: "parties", element: page(Parties) },
+      { path: "inventory", element: page(Inventory) },
+      { path: "rates", element: guarded("rates.view", Rates) },
+      { path: "reports", element: guarded("reports.view", Reports) },
+      { path: "audit", element: guarded("audit.view", Audit) },
+      { path: "users", element: guarded("users.view", Users) },
+      { path: "settings", element: guarded("settings.view", Settings) },
+      { path: "*", element: <Navigate to="/" replace /> },
+    ],
+  },
+]);
 
 export default function App() {
   const [status, setStatus] = useState("loading");
@@ -53,22 +77,7 @@ export default function App() {
 
   return (
     <AppProvider user={user} data={data} onSignedOut={signedOut}>
-      <BrowserRouter>
-        <Routes>
-          <Route element={<AppLayout />}>
-            <Route index element={<Suspense fallback={<PageFallback />}><Dashboard /></Suspense>} />
-            <Route path="bills" element={<Suspense fallback={<PageFallback />}><Bills /></Suspense>} />
-            <Route path="parties" element={<Suspense fallback={<PageFallback />}><Parties /></Suspense>} />
-            <Route path="inventory" element={<Suspense fallback={<PageFallback />}><Inventory /></Suspense>} />
-            <Route path="rates" element={<Suspense fallback={<PageFallback />}><RequirePerm user={user} perm="rates.view"><Rates /></RequirePerm></Suspense>} />
-            <Route path="reports" element={<Suspense fallback={<PageFallback />}><RequirePerm user={user} perm="reports.view"><Reports /></RequirePerm></Suspense>} />
-            <Route path="audit" element={<Suspense fallback={<PageFallback />}><RequirePerm user={user} perm="audit.view"><Audit /></RequirePerm></Suspense>} />
-            <Route path="users" element={<Suspense fallback={<PageFallback />}><RequirePerm user={user} perm="users.view"><Users /></RequirePerm></Suspense>} />
-            <Route path="settings" element={<Suspense fallback={<PageFallback />}><RequirePerm user={user} perm="settings.view"><Settings /></RequirePerm></Suspense>} />
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Route>
-        </Routes>
-      </BrowserRouter>
+      <RouterProvider router={router} />
       <Toaster />
     </AppProvider>
   );

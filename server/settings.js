@@ -20,13 +20,16 @@ export const DEFAULT_SETTINGS = {
     ifsc: "HDFC0000123",
     branch: "Banka",
     upi: "jmdgudmill@hdfc",
+    upiName: "", // payee name on the UPI screen; empty → falls back to business name
   },
-  qrImage: "", // data URL uploaded by owner; empty → QR is generated from the UPI id
   invoice: {
     footer: "Thank you for your business.",
     terms: "Goods once sold will not be taken back. Subject to Banka jurisdiction.",
     signatureName: "Authorised signatory",
-    showQr: true,
+    showQr: true, // master switch for the payment QR
+    // Per-bill-type QR: purchase OFF by default (the mill pays the supplier — no QR needed),
+    // sale + truck-sale ON. Overridable in Settings → Invoice content.
+    qrTypes: { sale: true, purchase: false, truckSale: true },
     logoText: "JM",
   },
   thermal: { width: "80" }, // "58" | "80"
