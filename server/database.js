@@ -75,6 +75,18 @@ export async function getSettings(tenantId) {
 }
 
 export async function updateSettings(user, patch, ctx) {
+  // Reject a malformed CD rule at the source. The bill math also clamps defensively, but catching
+  // it here gives the admin immediate feedback instead of silently falling back to defaults later.
+  if (patch && patch.cd && typeof patch.cd === "object") {
+    if (patch.cd.rate != null) {
+      const r = Number(patch.cd.rate);
+      if (!Number.isFinite(r) || r < 0 || r > 100) throw new Error("CD rate must be a number between 0 and 100.");
+    }
+    if (patch.cd.threshold != null) {
+      const t = Number(patch.cd.threshold);
+      if (!Number.isFinite(t) || t < 0) throw new Error("CD threshold must be a non-negative number.");
+    }
+  }
   const [existing] = await db.select().from(appSettings).where(eq(appSettings.tenantId, user.tenantId)).limit(1);
   const nextData = withDefaults({ ...(existing?.data || {}), ...patch });
   if (existing) {
@@ -357,6 +369,16 @@ async function transactionRows(user) {
 }
 
 // Truck-sale document metadata: free-text logistics fields + informational money figures.
+// Numeric sanity bounds. Money/weight columns are bigint(mode:'number') = JS double, so any
+// figure above 2^53 loses integer precision silently. These caps keep every derived total well
+// inside the safe-integer range while sitting far above any real grain transaction (₹10 crore
+// per bill / 1000 tonne / ₹1 lakh per kg), so a fat-finger or a malformed client is rejected
+// rather than storing a corrupt or approximate record.
+const MAX_MONEY_PAISE = 100_000_000_00; // ₹10,00,00,000 (10 crore) per bill line
+const MAX_WEIGHT_GRAMS = 1_000_000_000; // 1000 tonne
+const MAX_RATE_PAISE = 10_000_000; // ₹1,00,000 per kg
+const MAX_ADJ_PAISE = 100_000_000_00; // ₹10 crore per signed transport adjustment
+
 // Core bill money (gross/net/paid/due) stays in the integer-paise columns; these auxiliary
 // transport amounts are print-only and stored inside the JSON as integer paise too.
 const TRUCK_META_STRINGS = [
@@ -380,7 +402,9 @@ function sanitizeTruckMeta(raw) {
   if (Number.isFinite(bags) && bags > 0) out.bags = Math.round(bags);
   for (const key of TRUCK_META_MONEY) {
     const value = Number(raw[key]);
-    if (!Number.isFinite(value)) continue;
+    // Drop non-finite AND out-of-range figures so a huge signed adjustment can't push the folded
+    // net total past the safe-integer range (freight/bhara/etc. are print-only but capped too).
+    if (!Number.isFinite(value) || Math.abs(Math.round(value * 100)) > MAX_ADJ_PAISE) continue;
     if (TRUCK_META_SIGNED.has(key)) { if (value !== 0) out[`${key}Paise`] = Math.round(value * 100); }
     else if (value > 0) out[`${key}Paise`] = Math.round(value * 100);
   }
@@ -610,9 +634,16 @@ export async function createBill(user, payload, ctx) {
   const multiplier = unitMultipliers[payload.unit];
   const ratePaise = Math.round(Number(payload.rate) * 100);
   if (!Number.isFinite(quantity) || quantity <= 0 || !multiplier) throw new Error("Quantity and unit are invalid.");
-  if (!Number.isSafeInteger(ratePaise) || ratePaise <= 0) throw new Error("Rate is invalid.");
+  if (!Number.isSafeInteger(ratePaise) || ratePaise <= 0 || ratePaise > MAX_RATE_PAISE) throw new Error("Rate is invalid.");
   const weightGrams = Math.round(quantity * multiplier);
   const grossPaise = Math.round((weightGrams / 1000) * ratePaise);
+  // A positive quantity that rounds down to zero grams (e.g. 0.0004 kg) would otherwise post a
+  // real bill/stock movement/ledger row worth ₹0. Floor both derived figures so a sub-gram or
+  // sub-paise entry is rejected rather than creating a phantom record.
+  if (weightGrams <= 0) throw new Error("Quantity is too small to bill.");
+  if (grossPaise <= 0) throw new Error("Bill amount is too small.");
+  if (weightGrams > MAX_WEIGHT_GRAMS) throw new Error("Quantity is too large.");
+  if (grossPaise > MAX_MONEY_PAISE) throw new Error("Bill amount is too large.");
 
   // Detailed "truck sale" bills (GST Bill of Supply + Challan) carry extra document data.
   // They are still ordinary sale bills for stock/ledger purposes — only the print output
@@ -627,8 +658,14 @@ export async function createBill(user, payload, ctx) {
   // biller manually enables it (payload.applyCd) on a purchase bill. The deduction is
   // rounded UP to the next whole rupee (never fractional paise) per mill convention.
   const cd = (await getSettings(user.tenantId)).cd || {};
-  const cdThresholdPaise = Math.round((cd.threshold ?? 20000) * 100);
-  const cdFactor = (cd.rate ?? 2.5) / 100;
+  // Settings are owner-editable, so a stored cd.rate/threshold of "abc", a negative, or an absurd
+  // value must not poison the arithmetic. Coerce and clamp to a sane band; a non-finite rate would
+  // otherwise make deduction → net → paid → due all NaN, which slips past every < / > guard below
+  // (NaN comparisons are always false) and only fails at the Postgres INSERT with an opaque error.
+  const cdThreshold = Number(cd.threshold);
+  const cdRate = Number(cd.rate);
+  const cdThresholdPaise = Math.round((Number.isFinite(cdThreshold) && cdThreshold >= 0 ? cdThreshold : 20000) * 100);
+  const cdFactor = (Number.isFinite(cdRate) && cdRate >= 0 && cdRate <= 100 ? cdRate : 2.5) / 100;
   const deductionPaise = type === "purchase" && payload.applyCd && cd.enabled !== false && grossPaise > cdThresholdPaise
     ? Math.ceil((grossPaise * cdFactor) / 100) * 100
     : 0;
@@ -637,6 +674,9 @@ export async function createBill(user, payload, ctx) {
   const discountPaise = Math.round(Number(payload.discount || 0) * 100);
   if (!Number.isFinite(discountPaise) || discountPaise < 0) throw new Error("Discount amount is invalid.");
   const netPaise = grossPaise - deductionPaise - discountPaise + adjustmentsPaise;
+  // netPaise must be a real, in-range integer: guard NaN/overflow explicitly since `< 0` alone
+  // passes NaN and silently-imprecise values above 2^53.
+  if (!Number.isSafeInteger(netPaise)) throw new Error("Bill amount is out of range.");
   if (netPaise < 0) throw new Error("Discount, deduction and charges cannot exceed the bill amount.");
   // Payment must be non-negative and cannot exceed the bill total — there is no advance/
   // credit facility, so genuine overpayment is rejected (not silently clamped) to keep the

@@ -203,6 +203,10 @@ export const bills = pgTable(
     index("idx_bills_branch").on(t.tenantId, t.branchId, t.createdAt),
     check("bills_type_check", sql`${t.billType} in ('sale','purchase')`),
     check("bills_status_check", sql`${t.status} in ('posted','cancelled')`),
+    // Money invariants enforced at the storage layer as a last-line backstop, independent of the
+    // application guards in createBill: totals non-negative and paid + due reconciles to net.
+    check("bills_money_nonneg_check", sql`${t.grossPaise} >= 0 and ${t.netPaise} >= 0 and ${t.paidPaise} >= 0 and ${t.duePaise} >= 0`),
+    check("bills_reconcile_check", sql`${t.paidPaise} + ${t.duePaise} = ${t.netPaise}`),
   ],
 );
 

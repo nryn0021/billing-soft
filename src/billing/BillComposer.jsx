@@ -114,6 +114,9 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
     if (!party.name.trim() || !party.phone.trim() || !party.address.trim()) return setError("Party name, contact number and address are required.");
     if (!quantity || Number(quantity) <= 0) return setError("Enter a valid grain quantity.");
     if (!rate || Number(rate) <= 0) return setError("Enter a valid rate per kg.");
+    // Mirror the server floor: a positive-but-sub-gram quantity (e.g. 0.0004 kg) would post a ₹0 bill.
+    if (Math.round(totalKg * 1000) <= 0) return setError("Quantity is too small to bill.");
+    if (Math.round(gross * 100) <= 0) return setError("Bill amount is too small.");
     if (type === "sale" && totalKg > product.stockKg) return setError(`Insufficient stock — ${num.format(product.stockKg)} kg available.`);
     if (discountTooBig) {
       const message = "Discount is more than the bill amount.";
