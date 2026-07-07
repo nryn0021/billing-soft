@@ -66,7 +66,9 @@ export default function Dashboard() {
 
       {/* main + side */}
       <div className="grid xl:grid-cols-3 gap-4 lg:gap-5">
-        <Card className="p-5 xl:col-span-2 flex flex-col">
+        {/* self-start stops the grid from stretching this card to match the taller right column,
+            which previously left a growing blank gap under the fixed-height chart. */}
+        <Card className="p-5 xl:col-span-2 self-start">
           <PanelHeader title="Sales & purchase overview" subtitle={`Net values · last ${range} days`}
             action={<Segmented size="sm" options={[{ value: 7, label: "7d" }, { value: 14, label: "14d" }, { value: 30, label: "30d" }]} value={range} onChange={setRange} />} />
           <div className="flex flex-wrap items-center gap-5 mb-4">
@@ -77,11 +79,7 @@ export default function Dashboard() {
               <span className="flex items-center gap-1.5 text-ink-2"><span className="size-2.5 rounded-sm" style={{ background: "var(--purchase)" }} />Purchases</span>
             </div>
           </div>
-          {/* Chart fills the remaining card height so a busy right column never leaves a blank
-              gap under the bars — the panel resizes dynamically. */}
-          <div className="grow min-h-[240px]">
-            <GroupedBars data={series} format={(v) => inr.format(v)} />
-          </div>
+          <GroupedBars data={series} height={260} format={(v) => inr.format(v)} />
         </Card>
 
         <div className="space-y-4">

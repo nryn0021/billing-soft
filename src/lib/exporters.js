@@ -171,7 +171,10 @@ export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }
   doc.text("AMOUNT", cAmt - 2, y + 5.3, { align: "right" });
   y += th;
 
-  const desc = `${invoice.product || ""}${invoice.productHindi ? " (" + invoice.productHindi + ")" : ""}`;
+  // jsPDF's built-in Helvetica can't render Devanagari — the Hindi name (मक्का …) came out as
+  // garbage, so the PDF shows the English product name only (any stray non-Latin glyph stripped).
+  // The on-screen A4/BoS keep the Hindi where the browser can render it.
+  const desc = String(invoice.product || "Item").replace(/[^\x20-\x7E]/g, "").trim() || "Item";
   doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
   const descLines = doc.splitTextToSize(desc, descW);
   const rowH = Math.max(9, descLines.length * 4 + 4);
@@ -193,10 +196,11 @@ export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }
   rowT("Gross amount", money(invoice.gross));
   if (invoice.cdDeduction > 0) rowT("CD deduction", "- " + money(invoice.cdDeduction));
   if (invoice.discount > 0) rowT("Discount", "- " + money(invoice.discount));
-  doc.setLineWidth(0.4); doc.line(tLabel, y - 2.5, cAmt, y - 2.5); doc.setLineWidth(0.3);
   doc.setFontSize(9.5); rowT(`Net ${isSale ? "receivable" : "payable"}`, money(invoice.netAmount), true);
   doc.setFontSize(8.5); rowT("Paid", money(invoice.paidAmount));
-  rowT("Balance due", money(invoice.dueAmount), true);
+  // Aligned separator immediately before the final Balance due (spans the totals column).
+  y += 1; doc.setLineWidth(0.4); doc.line(tLabel, y - 2, cAmt, y - 2); doc.setLineWidth(0.3); y += 2;
+  doc.setFontSize(9); rowT("Balance due", money(invoice.dueAmount), true);
 
   // Amount in words + remarks fill the left column beside the totals.
   doc.setFont("helvetica", "bold"); doc.setFontSize(8);

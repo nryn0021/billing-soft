@@ -297,26 +297,23 @@ function useSize() {
 const EASE = [0.16, 1, 0.3, 1];
 
 /** Grouped bar chart: sale vs purchase per period. */
-export function GroupedBars({ data, height, format = (v) => num.format(v) }) {
-  const [ref, size] = useSize();
+export function GroupedBars({ data, height = 260, format = (v) => num.format(v) }) {
+  const [ref, { width }] = useSize();
   const [hover, setHover] = useState(null);
-  const width = size.width;
-  // Render to the measured container height when the caller lets the chart fill its card (no
-  // fixed `height` prop). This makes the overview panel dynamic — it grows/shrinks with the
-  // card instead of leaving a fixed 250px block with blank space below. Clamp to a floor so it
-  // never collapses, and fall back to a default before the ResizeObserver reports a size.
-  const H = Math.max(180, Math.round(height || size.height || 240));
   const padX = 10, padTop = 18, padBottom = 26;
-  const max = Math.max(1, ...data.flatMap((d) => [d.sale, d.purchase]));
-  const plotH = H - padTop - padBottom;
+  // Clamp values at 0 — a day with a net loss (returns > sales) must sit ON the baseline, never
+  // render below the axis. The scale is driven by the largest non-negative value.
+  const val0 = (v) => Math.max(0, Number(v) || 0);
+  const max = Math.max(1, ...data.flatMap((d) => [val0(d.sale), val0(d.purchase)]));
+  const plotH = height - padTop - padBottom;
   const groupW = width ? (width - padX * 2) / data.length : 0;
   const barW = Math.min(16, Math.max(6, groupW / 3.2));
   const gap = 3;
-  const y = (v) => padTop + plotH - (v / max) * plotH;
+  const y = (v) => padTop + plotH - (val0(v) / max) * plotH;
   return (
-    <div ref={ref} className="relative w-full h-full overflow-hidden" style={height ? { height } : { minHeight: 200 }}>
-      {width > 0 && plotH > 0 && (
-        <svg width={width} height={H} className="overflow-visible">
+    <div ref={ref} className="relative w-full" style={{ height }}>
+      {width > 0 && (
+        <svg width={width} height={height} className="overflow-visible">
           {[0, 0.25, 0.5, 0.75, 1].map((f) => (
             <line key={f} x1={padX} x2={width - padX} y1={padTop + plotH * f} y2={padTop + plotH * f} stroke="var(--line)" strokeWidth="1" strokeDasharray={f === 1 ? "0" : "3 5"} />
           ))}
@@ -327,13 +324,13 @@ export function GroupedBars({ data, height, format = (v) => num.format(v) }) {
               <g key={d.key} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
                 <rect x={padX + i * groupW} y={padTop} width={groupW} height={plotH} fill={active ? "color-mix(in oklab, var(--surface-3) 60%, transparent)" : "transparent"} rx="6" />
                 {[["sale", "var(--sale)", -1], ["purchase", "var(--purchase)", 1]].map(([k, color, dir]) => {
-                  const val = d[k];
+                  const val = val0(d[k]);
                   const h = (val / max) * plotH;
                   const x = gx + dir * (gap / 2) + (dir < 0 ? -barW : 0);
                   return <motion.rect key={k} x={x} width={barW} rx="4" fill={color}
                     initial={{ height: 0, y: padTop + plotH }} animate={{ height: Math.max(val > 0 ? 2 : 0, h), y: y(val) }} transition={{ duration: 0.7, ease: EASE, delay: i * 0.02 }} />;
                 })}
-                <text x={gx} y={H - 8} textAnchor="middle" className="fill-muted" style={{ fontSize: 10 }}>{d.short || d.label}</text>
+                <text x={gx} y={height - 8} textAnchor="middle" className="fill-muted" style={{ fontSize: 10 }}>{d.short || d.label}</text>
               </g>
             );
           })}
