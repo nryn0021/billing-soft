@@ -92,74 +92,154 @@ function drawPdfStamp(doc, ps, x, y, w) {
   doc.setTextColor(19, 29, 24); doc.setDrawColor(19, 29, 24); doc.setLineWidth(0.5); doc.setFont("helvetica", "normal");
 }
 
-/** A4 invoice PDF drawn with jsPDF (crisp vector text + embedded QR). */
+/**
+ * A4 invoice PDF drawn with jsPDF — a black-and-white bordered layout that mirrors the
+ * truck "Bill of Supply" (thin black rules, no colour accents), so it prints clean on any
+ * office printer. Everything stays on ONE A4 page: the goods description wraps inside a fixed
+ * column instead of bleeding across the amount columns, and no addPage() is ever called.
+ * Per-document element visibility comes from Settings → Documents (`documents.a4`).
+ */
 export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }) {
   const { jsPDF } = await import("jspdf");
   const { paymentStamp } = await import("./format");
+  const { docPref, docText } = await import("./docPrefs");
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const isSale = invoice.type === "sale";
   const b = settings.business || {}; const bank = settings.bank || {};
-  const M = 16; let y = 20;
-  const inr = (n) => `INR ${Number(n).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const inv = settings.invoice || {};
+  const INK = [17, 19, 15]; // near-black ink for all text + borders
+  const M = 14, R = 210 - M; // left/right page margins
+  const money = (n) => Number(n || 0).toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const setInk = () => { doc.setTextColor(INK[0], INK[1], INK[2]); doc.setDrawColor(INK[0], INK[1], INK[2]); };
+  setInk(); doc.setLineWidth(0.3);
 
-  doc.setFont("helvetica", "bold"); doc.setFontSize(18); doc.setTextColor(19, 29, 24);
+  // Per-document toggles
+  const showBank = docPref(settings, "a4", "bank");
+  const showStamp = docPref(settings, "a4", "stamp");
+  const showSignature = docPref(settings, "a4", "signature");
+  const showRemarks = docPref(settings, "a4", "remarks");
+  const showTerms = docPref(settings, "a4", "terms");
+  const termsText = docText(settings, "a4", "terms", inv.terms || "");
+  const footerText = docText(settings, "a4", "footer", inv.footer || "");
+
+  let y = 16;
+
+  // ---- Header: business identity (left) + document title/no/date (right) ----
+  doc.setFont("helvetica", "bold"); doc.setFontSize(17);
   doc.text(b.name || "Business", M, y);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(90);
-  doc.text([...(b.addressLines || []), `Owner: ${b.owner || ""}  |  ${b.contact || ""}`, `GSTIN: ${b.gstin || "-"}`], M, y + 6);
-  doc.setFont("helvetica", "bold"); doc.setFontSize(12); doc.setTextColor(21, 118, 79);
-  doc.text(isSale ? "SALE INVOICE" : "PURCHASE VOUCHER", 210 - M, y, { align: "right" });
-  doc.setTextColor(19, 29, 24); doc.setFontSize(11);
-  doc.text(invoice.id, 210 - M, y + 6, { align: "right" });
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(90);
-  doc.text(new Date(invoice.date).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" }), 210 - M, y + 11, { align: "right" });
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+  const idLines = [...(b.addressLines || []), `Owner: ${b.owner || ""}  ·  ${b.contact || ""}`, `GSTIN: ${b.gstin || "-"}`];
+  doc.text(idLines, M, y + 5.5);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(13);
+  doc.text(isSale ? "SALE INVOICE" : "PURCHASE VOUCHER", R, y, { align: "right" });
+  doc.setFontSize(10); doc.text(invoice.id, R, y + 6, { align: "right" });
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+  doc.text(new Date(invoice.date).toLocaleDateString("en-IN", { day: "2-digit", month: "long", year: "numeric" }), R, y + 11, { align: "right" });
 
-  y += 24; doc.setDrawColor(19, 29, 24); doc.setLineWidth(0.5); doc.line(M, y, 210 - M, y); y += 8;
-  doc.setTextColor(19, 29, 24); doc.setFont("helvetica", "bold"); doc.setFontSize(10);
-  doc.text(isSale ? "Billed to" : "Received from", M, y);
-  doc.text("Pay to", 120, y);
-  doc.setFont("helvetica", "normal"); doc.setFontSize(9); doc.setTextColor(60);
-  doc.text([invoice.party, invoice.partyAddress || "", invoice.partyPhone || "", invoice.partyGstin ? `GSTIN: ${invoice.partyGstin}` : "", `Payment: ${invoice.paymentMethod}`].filter(Boolean), M, y + 6);
-  doc.text([`${bank.name || ""}`, `A/C ${bank.account || ""}`, `IFSC ${bank.ifsc || ""}`, `Branch ${bank.branch || ""}`], 120, y + 6);
+  y += 5.5 + idLines.length * 4 + 3;
+  doc.setLineWidth(0.5); doc.line(M, y, R, y); doc.setLineWidth(0.3); y += 6;
 
-  y += 34;
-  doc.setFillColor(243, 246, 242); doc.rect(M, y, 210 - 2 * M, 8, "F");
-  doc.setFont("helvetica", "bold"); doc.setFontSize(8); doc.setTextColor(90);
-  doc.text("DESCRIPTION", M + 2, y + 5.5);
-  doc.text("WEIGHT", 120, y + 5.5); doc.text("RATE/KG", 150, y + 5.5); doc.text("AMOUNT", 210 - M - 2, y + 5.5, { align: "right" });
-  y += 12; doc.setFont("helvetica", "normal"); doc.setTextColor(19, 29, 24); doc.setFontSize(9);
-  doc.text(`${invoice.product}${invoice.productHindi ? " (" + invoice.productHindi + ")" : ""}`, M + 2, y);
-  doc.text(`${invoice.totalKg} kg`, 120, y); doc.text(inr(invoice.rate).replace("INR ", ""), 150, y);
-  doc.text(inr(invoice.gross).replace("INR ", ""), 210 - M - 2, y, { align: "right" });
-
-  y += 10; const tx = 120;
-  const rowP = (label, val, bold) => { doc.setFont("helvetica", bold ? "bold" : "normal"); doc.text(label, tx, y); doc.text(val, 210 - M - 2, y, { align: "right" }); y += 6; };
-  rowP("Gross amount", inr(invoice.gross).replace("INR ", ""));
-  if (invoice.cdDeduction > 0) rowP("CD deduction", "- " + inr(invoice.cdDeduction).replace("INR ", ""));
-  if (invoice.discount > 0) rowP("Discount", "- " + inr(invoice.discount).replace("INR ", ""));
-  doc.setDrawColor(19, 29, 24); doc.line(tx, y - 2, 210 - M, y - 2);
-  rowP(`Net ${isSale ? "receivable" : "payable"}`, inr(invoice.netAmount).replace("INR ", ""), true);
-  rowP("Paid", inr(invoice.paidAmount).replace("INR ", ""));
-  rowP("Balance due", inr(invoice.dueAmount).replace("INR ", ""));
-
-  doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(90);
-  doc.text(`Amount in words: ${amountInWords(Math.round(invoice.netAmount))} Rupees Only`, M, y);
-  if (invoice.remarks) { y += 5; doc.text(`Remarks: ${invoice.remarks}`, M, y, { maxWidth: 120 }); }
-  // qrDataUrl is already "" when the QR is switched off for this bill type or the bill is
-  // fully paid (makeInvoiceQr gates it), so a truthy value means "show it".
-  if (qrDataUrl) {
-    try { doc.addImage(qrDataUrl, "PNG", M, y + 6, 26, 26); doc.text(`Scan to pay ${inr(invoice.dueAmount).replace("INR ", "Rs ")}`, M + 30, y + 12); doc.text(`UPI: ${bank.upi || ""}`, M + 30, y + 17); } catch { /* ignore bad image */ }
+  // ---- Parties: two bordered boxes (Billed to / Pay to) ----
+  const mid = 105, boxH = showBank ? 30 : 26, half = (R - M) / 2 - 2;
+  doc.rect(M, y, showBank ? half : R - M, boxH);
+  if (showBank) doc.rect(mid, y, R - mid, boxH);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+  doc.text(isSale ? "BILLED TO" : "RECEIVED FROM", M + 2, y + 5);
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+  doc.text([invoice.party, invoice.partyAddress || "", invoice.partyPhone || "",
+    invoice.partyGstin ? `GSTIN: ${invoice.partyGstin}` : "", `Payment: ${invoice.paymentMethod}`].filter(Boolean),
+    M + 2, y + 10, { maxWidth: (showBank ? half : R - M) - 4 });
+  if (showBank) {
+    doc.setFont("helvetica", "bold"); doc.setFontSize(9);
+    doc.text("PAY TO", mid + 2, y + 5);
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+    doc.text([`${bank.name || ""}`, `A/C ${bank.account || ""}`, `IFSC ${bank.ifsc || ""}`,
+      `Branch ${bank.branch || ""}`, bank.upi ? `UPI ${bank.upi}` : ""].filter(Boolean), mid + 2, y + 10);
   }
-  // Payment-status stamp (coloured box) on the right, aligned with the QR row.
-  drawPdfStamp(doc, paymentStamp(invoice), 132, y + 6, 210 - M - 132);
-  y += 44;
-  doc.setFontSize(7); doc.setTextColor(120);
-  doc.text(settings.invoice?.terms || "", M, y, { maxWidth: 120 });
-  // Proprietor signature block, bottom-right.
-  doc.setFontSize(8); doc.setTextColor(60);
-  doc.text(`For ${b.name || ""}`, 210 - M, y, { align: "right" });
-  doc.setFont("helvetica", "italic"); doc.setFontSize(13); doc.setTextColor(20, 60, 40);
-  doc.text(b.owner || "", 210 - M, y + 9, { align: "right" });
-  doc.setFont("helvetica", "normal"); doc.setFontSize(8); doc.setTextColor(60);
-  doc.text(`${b.owner || "Authorised signatory"}, Proprietor`, 210 - M, y + 14, { align: "right" });
+  y += boxH + 6;
+
+  // ---- Goods table: bordered header + one wrapped row ----
+  // Columns: description | weight | rate/kg | amount. Description wraps in its fixed width.
+  const cDesc = M, cWt = 118, cRate = 145, cAmt = R; // x anchors (amount right-aligned to R)
+  const descW = cWt - cDesc - 4;
+  const th = 8;
+  doc.setLineWidth(0.4); doc.rect(M, y, R - M, th);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(8.5);
+  doc.text("DESCRIPTION", cDesc + 2, y + 5.3);
+  doc.text("WEIGHT", cWt, y + 5.3);
+  doc.text("RATE / KG", cRate, y + 5.3);
+  doc.text("AMOUNT", cAmt - 2, y + 5.3, { align: "right" });
+  y += th;
+
+  const desc = `${invoice.product || ""}${invoice.productHindi ? " (" + invoice.productHindi + ")" : ""}`;
+  doc.setFont("helvetica", "normal"); doc.setFontSize(8.5);
+  const descLines = doc.splitTextToSize(desc, descW);
+  const rowH = Math.max(9, descLines.length * 4 + 4);
+  doc.setLineWidth(0.3); doc.rect(M, y, R - M, rowH);
+  doc.text(descLines, cDesc + 2, y + 5);
+  doc.text(`${money(invoice.totalKg)} kg`.replace(".00", ""), cWt, y + 5);
+  doc.text(money(invoice.rate), cRate, y + 5);
+  doc.text(money(invoice.gross), cAmt - 2, y + 5, { align: "right" });
+  y += rowH + 6;
+
+  // ---- Totals block (right-aligned), amount-in-words + remarks (left) ----
+  const tLabel = 130;
+  const rowT = (label, val, bold) => {
+    doc.setFont("helvetica", bold ? "bold" : "normal");
+    doc.text(label, tLabel, y); doc.text(val, cAmt - 2, y, { align: "right" }); y += 5.5;
+  };
+  const wordsY = y;
+  doc.setFontSize(8.5);
+  rowT("Gross amount", money(invoice.gross));
+  if (invoice.cdDeduction > 0) rowT("CD deduction", "- " + money(invoice.cdDeduction));
+  if (invoice.discount > 0) rowT("Discount", "- " + money(invoice.discount));
+  doc.setLineWidth(0.4); doc.line(tLabel, y - 2.5, cAmt, y - 2.5); doc.setLineWidth(0.3);
+  doc.setFontSize(9.5); rowT(`Net ${isSale ? "receivable" : "payable"}`, money(invoice.netAmount), true);
+  doc.setFontSize(8.5); rowT("Paid", money(invoice.paidAmount));
+  rowT("Balance due", money(invoice.dueAmount), true);
+
+  // Amount in words + remarks fill the left column beside the totals.
+  doc.setFont("helvetica", "bold"); doc.setFontSize(8);
+  doc.text("Amount in words", M, wordsY);
+  doc.setFont("helvetica", "normal");
+  doc.text(doc.splitTextToSize(`${amountInWords(Math.round(invoice.netAmount))} Rupees Only`, tLabel - M - 4), M, wordsY + 4.5);
+  let leftY = wordsY + 14;
+  if (showRemarks && invoice.remarks) {
+    doc.text(doc.splitTextToSize(`Remarks: ${invoice.remarks}`, tLabel - M - 4), M, leftY);
+    leftY += 8;
+  }
+  y = Math.max(y, leftY) + 4;
+
+  // ---- QR (left) + payment stamp (right), on the same band ----
+  const bandY = y;
+  if (qrDataUrl) {
+    try {
+      doc.addImage(qrDataUrl, "PNG", M, bandY, 24, 24);
+      doc.setFontSize(8.5); doc.text(`Scan to pay Rs ${money(invoice.dueAmount)}`, M + 28, bandY + 8);
+      doc.setFontSize(8); doc.text(`UPI: ${bank.upi || ""}`, M + 28, bandY + 13);
+    } catch { /* ignore bad image */ }
+  }
+  if (showStamp) drawPdfStamp(doc, paymentStamp(invoice), 150, bandY + 2, R - 150);
+  y = bandY + 30;
+
+  // ---- Terms (left) + signature (right) ----
+  if (showTerms && termsText) {
+    doc.setFontSize(7.5);
+    doc.text(doc.splitTextToSize(`Terms: ${termsText}`, 118), M, y);
+  }
+  if (showSignature) {
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+    doc.text(`For ${b.name || ""}`, R, y, { align: "right" });
+    doc.setFont("helvetica", "italic"); doc.setFontSize(12);
+    doc.text(b.owner || "", R, y + 8, { align: "right" });
+    doc.setFont("helvetica", "normal"); doc.setFontSize(8);
+    doc.text(`${b.owner || "Authorised signatory"}, Proprietor`, R, y + 13, { align: "right" });
+  }
+  y += 20;
+
+  // ---- Footer note ----
+  doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(110, 110, 110);
+  doc.text(`${footerText} · This is a computer-generated ${isSale ? "invoice" : "voucher"}.`, 105, Math.min(y, 288), { align: "center" });
+
   doc.save(`${invoice.id}.pdf`);
 }

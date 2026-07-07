@@ -59,14 +59,14 @@ export function TruckBillComposer({ defaultBranch, onClose }) {
   const [brokerName, setBrokerName] = useState("");
   const [brokerMob, setBrokerMob] = useState("");
 
-  // saved-master selection (transporter + vehicle)
-  const [transporterId, setTransporterId] = useState("");
-  const [vehicleId, setVehicleId] = useState("");
-  const [savingMaster, setSavingMaster] = useState("");
+  // transporter / vehicle autocomplete — type a name to fill from saved masters (no dropdown
+  // pickers); a brand-new transporter/vehicle is remembered automatically when the bill saves.
+  const [transportOpen, setTransportOpen] = useState(false);
+  const [vehicleOpen, setVehicleOpen] = useState(false);
 
   // payment + remarks (invoice/challan numbers are now auto-assigned by the server)
   const [placeOfSupply, setPlaceOfSupply] = useState(settings.business?.city || "");
-  const [paymentMethod, setPaymentMethod] = useState("Credit");
+  const [paymentMethod, setPaymentMethod] = useState(settings.billing?.defaultPaymentMethod || "Credit");
   const [paidAmount, setPaidAmount] = useState("");
   const [remarks, setRemarks] = useState("");
 
@@ -123,35 +123,44 @@ export function TruckBillComposer({ defaultBranch, onClose }) {
     if (p.gstin) setBuyerGstin(p.gstin); // pre-fill the buyer GSTIN from the saved party
   };
 
-  // Selecting a saved transporter / vehicle fills the transport section (still editable).
-  const chooseTransporter = (id) => {
-    setTransporterId(id);
-    const t = data.transporters?.find((x) => x.id === id);
-    if (t) { setTransportName(t.name); setTransportMob(t.phone || ""); }
+  // Type-ahead suggestions from the saved masters (matched on name/phone or vehicle no).
+  const transportMatches = useMemo(() => {
+    const q = transportName.trim().toLowerCase();
+    if (!q) return [];
+    const digits = q.replace(/\D/g, "");
+    return (data.transporters || [])
+      .filter((t) => t.name.toLowerCase().includes(q) || (digits && (t.phone || "").replace(/\D/g, "").includes(digits)))
+      .slice(0, 6);
+  }, [data.transporters, transportName]);
+  const vehicleMatches = useMemo(() => {
+    const q = vehicleNo.trim().toLowerCase();
+    if (!q) return [];
+    return (data.vehicles || []).filter((v) => v.vehicleNo.toLowerCase().includes(q)).slice(0, 6);
+  }, [data.vehicles, vehicleNo]);
+
+  // Selecting a suggestion fills the transport section (every field stays editable after).
+  const pickTransporter = (t) => {
+    setTransportName(t.name); setTransportMob(t.phone || ""); setTransportOpen(false);
   };
-  const chooseVehicle = (id) => {
-    setVehicleId(id);
-    const v = data.vehicles?.find((x) => x.id === id);
-    if (v) {
-      setVehicleNo(v.vehicleNo);
-      setOwnerName(v.ownerName || ""); setOwnerMob(v.ownerMob || "");
-      setDriverName(v.driverName || ""); setDriverMob(v.driverMob || "");
-      setDlNo(v.dlNo || ""); setAadhaar(v.aadhaar || "");
+  const pickVehicle = (v) => {
+    setVehicleNo(v.vehicleNo);
+    setOwnerName(v.ownerName || ""); setOwnerMob(v.ownerMob || "");
+    setDriverName(v.driverName || ""); setDriverMob(v.driverMob || "");
+    setDlNo(v.dlNo || ""); setAadhaar(v.aadhaar || "");
+    setVehicleOpen(false);
+  };
+
+  // Best-effort: remember a newly-typed transporter / vehicle so it autocompletes next time.
+  // Never blocks the bill — any failure here is swallowed.
+  const rememberMasters = async () => {
+    const tName = transportName.trim();
+    if (tName && !(data.transporters || []).some((t) => t.name.trim().toLowerCase() === tName.toLowerCase())) {
+      try { await saveTransporter({ name: tName, phone: transportMob.trim() }); } catch { /* ignore */ }
     }
-  };
-  const saveNewTransporter = async () => {
-    if (!transportName.trim()) return setError("Enter a transport name to save it.");
-    setSavingMaster("transporter"); setError("");
-    try { await saveTransporter({ name: transportName.trim(), phone: transportMob.trim() }); }
-    catch (e) { setError(e.message); }
-    finally { setSavingMaster(""); }
-  };
-  const saveNewVehicle = async () => {
-    if (!vehicleNo.trim()) return setError("Enter a vehicle number to save it.");
-    setSavingMaster("vehicle"); setError("");
-    try { await saveVehicle({ vehicleNo: vehicleNo.trim(), ownerName, ownerMob, driverName, driverMob, dlNo, aadhaar }); }
-    catch (e) { setError(e.message); }
-    finally { setSavingMaster(""); }
+    const vNo = vehicleNo.trim();
+    if (vNo && !(data.vehicles || []).some((v) => v.vehicleNo.trim().toLowerCase() === vNo.toLowerCase())) {
+      try { await saveVehicle({ vehicleNo: vNo, ownerName, ownerMob, driverName, driverMob, dlNo, aadhaar }); } catch { /* ignore */ }
+    }
   };
 
   const buildMeta = () => ({
@@ -182,6 +191,7 @@ export function TruckBillComposer({ defaultBranch, onClose }) {
         remarks,
         meta: buildMeta(),
       }, printFormat ? { print: true, format: printFormat } : {});
+      await rememberMasters();
       onClose();
     } catch (e) {
       setError(e.message);
@@ -286,34 +296,60 @@ export function TruckBillComposer({ defaultBranch, onClose }) {
 
           {/* transport / challan */}
           <section className="space-y-3">
-            <SectionLabel n="03" title="Transport & Challan" hint="Pick a saved transporter / vehicle or type new details" />
-            {/* Transporter master picker */}
+            <SectionLabel n="03" title="Transport & Challan" hint="Start typing — saved transporter / vehicle details fill in automatically" />
             <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="Saved transporter">
-                <select value={transporterId} onChange={(e) => chooseTransporter(e.target.value)} className="input">
-                  <option value="">— Choose saved transporter —</option>
-                  {(data.transporters || []).map((t) => <option key={t.id} value={t.id}>{t.name}{t.phone ? ` · ${t.phone}` : ""}</option>)}
-                </select>
-              </Field>
-              <Field label="Saved vehicle">
-                <select value={vehicleId} onChange={(e) => chooseVehicle(e.target.value)} className="input">
-                  <option value="">— Choose saved vehicle —</option>
-                  {(data.vehicles || []).map((v) => <option key={v.id} value={v.id}>{v.vehicleNo}{v.driverName ? ` · ${v.driverName}` : ""}</option>)}
-                </select>
-              </Field>
-            </div>
-            <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="Transport name"><input value={transportName} onChange={(e) => { setTransportName(e.target.value); setTransporterId(""); }} placeholder="e.g. Kishan Transport" className="input" /></Field>
+              {/* Transport name — type-ahead over saved transporters; picking fills the phone. */}
+              <div className="relative">
+                <Field label="Transport name">
+                  <div className="relative">
+                    <FiTruck className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                    <input value={transportName} autoComplete="off"
+                      onChange={(e) => { setTransportName(e.target.value); setTransportOpen(Boolean(e.target.value.trim())); }}
+                      onFocus={() => setTransportOpen(Boolean(transportName.trim()))}
+                      onBlur={() => setTimeout(() => setTransportOpen(false), 140)}
+                      placeholder="e.g. Kishan Transport" className="input pl-9" />
+                  </div>
+                </Field>
+                {transportOpen && transportMatches.length > 0 && (
+                  <div className="absolute z-20 left-0 right-0 mt-1 card p-1.5 shadow-pop max-h-56 overflow-y-auto">
+                    {transportMatches.map((t) => (
+                      <button key={t.id} type="button" onMouseDown={(e) => { e.preventDefault(); pickTransporter(t); }}
+                        className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-surface-2 text-left">
+                        <span className="grid place-items-center size-8 rounded-lg bg-info/10 text-info shrink-0"><FiTruck className="text-sm" /></span>
+                        <span className="min-w-0 grow"><span className="block text-sm font-medium text-ink truncate">{t.name}</span><span className="block text-xs text-muted truncate">{t.phone || "No phone saved"}</span></span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <Field label="Transport mobile"><input value={transportMob} onChange={(e) => setTransportMob(e.target.value)} inputMode="tel" placeholder="Mobile" className="input" /></Field>
             </div>
-            <div className="flex justify-end -mt-1">
-              <button type="button" onClick={saveNewTransporter} disabled={savingMaster === "transporter" || !transportName.trim()}
-                className="text-xs font-semibold text-info hover:underline disabled:opacity-40 disabled:no-underline flex items-center gap-1">
-                <FiPlus /> {savingMaster === "transporter" ? "Saving…" : "Save as new transporter"}
-              </button>
-            </div>
+            <p className="text-xs text-muted -mt-1 flex items-center gap-1.5"><FiPlus /> New transporter &amp; vehicle are saved automatically with the bill.</p>
             <div className="grid sm:grid-cols-2 gap-3">
-              <Field label="Vehicle no."><input value={vehicleNo} onChange={(e) => { setVehicleNo(e.target.value.toUpperCase()); setVehicleId(""); }} placeholder="e.g. WB29B 4163" className="input" /></Field>
+              {/* Vehicle no. — type-ahead over saved vehicles; picking fills owner/driver/DL. */}
+              <div className="relative">
+                <Field label="Vehicle no.">
+                  <div className="relative">
+                    <FiSearch className="absolute left-3 top-1/2 -translate-y-1/2 text-muted" />
+                    <input value={vehicleNo} autoComplete="off"
+                      onChange={(e) => { setVehicleNo(e.target.value.toUpperCase()); setVehicleOpen(Boolean(e.target.value.trim())); }}
+                      onFocus={() => setVehicleOpen(Boolean(vehicleNo.trim()))}
+                      onBlur={() => setTimeout(() => setVehicleOpen(false), 140)}
+                      placeholder="e.g. WB29B 4163" className="input pl-9" />
+                  </div>
+                </Field>
+                {vehicleOpen && vehicleMatches.length > 0 && (
+                  <div className="absolute z-20 left-0 right-0 mt-1 card p-1.5 shadow-pop max-h-56 overflow-y-auto">
+                    {vehicleMatches.map((v) => (
+                      <button key={v.id} type="button" onMouseDown={(e) => { e.preventDefault(); pickVehicle(v); }}
+                        className="w-full flex items-center gap-3 p-2 rounded-lg hover:bg-surface-2 text-left">
+                        <span className="grid place-items-center size-8 rounded-lg bg-info/10 text-info text-[11px] font-bold shrink-0">{v.vehicleNo.slice(-4)}</span>
+                        <span className="min-w-0 grow"><span className="block text-sm font-medium text-ink truncate">{v.vehicleNo}</span><span className="block text-xs text-muted truncate">{[v.ownerName, v.driverName].filter(Boolean).join(" · ") || "No owner/driver saved"}</span></span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
               <Field label="Driver name"><input value={driverName} onChange={(e) => setDriverName(e.target.value)} placeholder="Driver" className="input" /></Field>
               <Field label="Driver mobile"><input value={driverMob} onChange={(e) => setDriverMob(e.target.value)} inputMode="tel" placeholder="Mobile" className="input" /></Field>
               <Field label="Vehicle owner"><input value={ownerName} onChange={(e) => setOwnerName(e.target.value)} placeholder="Owner" className="input" /></Field>
@@ -321,12 +357,6 @@ export function TruckBillComposer({ defaultBranch, onClose }) {
               <Field label="Driving licence no."><input value={dlNo} onChange={(e) => setDlNo(e.target.value.toUpperCase())} placeholder="D.L. No." className="input" /></Field>
               <Field label="Aadhaar no. (optional)"><input value={aadhaar} onChange={(e) => setAadhaar(e.target.value)} inputMode="numeric" placeholder="12-digit Aadhaar" className="input" /></Field>
               <Field label="Place of supply"><input value={placeOfSupply} onChange={(e) => setPlaceOfSupply(e.target.value)} placeholder="e.g. Amarpur" className="input" /></Field>
-            </div>
-            <div className="flex justify-end -mt-1">
-              <button type="button" onClick={saveNewVehicle} disabled={savingMaster === "vehicle" || !vehicleNo.trim()}
-                className="text-xs font-semibold text-info hover:underline disabled:opacity-40 disabled:no-underline flex items-center gap-1">
-                <FiPlus /> {savingMaster === "vehicle" ? "Saving…" : "Save as new vehicle"}
-              </button>
             </div>
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               <Field label="Freight (₹)"><input value={freight} onChange={(e) => setFreight(e.target.value)} type="number" min="0" placeholder="0" className="input" /></Field>

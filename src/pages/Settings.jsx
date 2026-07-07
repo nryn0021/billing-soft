@@ -1,19 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useBlocker } from "react-router-dom";
 import {
-  FiAlertTriangle, FiBell, FiCheckCircle, FiCreditCard, FiHash, FiHome, FiKey, FiLock, FiMonitor, FiMoon,
+  FiAlertTriangle, FiBell, FiCheckCircle, FiCreditCard, FiHash, FiHome, FiKey, FiLayers, FiLock, FiMonitor, FiMoon,
   FiPrinter, FiShield, FiSliders, FiSun, FiFileText,
 } from "react-icons/fi";
 import { api } from "../api";
 import { useApp } from "../context/AppContext";
 import { Avatar, Badge, Button, Card, Field, Modal, Toggle, cx } from "../ui";
 import { makeQr, upiUri } from "../lib/qr";
+import { PAYMENT_METHODS } from "../lib/format";
 import { ADMIN_LOCKED_PERMISSIONS, PERMISSION_CATALOG, defaultRolePermissions } from "../lib/permissions";
 
 const TABS = [
   { id: "business", label: "Business", icon: FiHome },
   { id: "bank", label: "Bank & UPI", icon: FiCreditCard },
   { id: "invoice", label: "Invoice", icon: FiFileText },
+  { id: "documents", label: "Documents", icon: FiLayers },
   { id: "printing", label: "Printing", icon: FiPrinter },
   { id: "billing", label: "Billing & tax", icon: FiSliders },
   { id: "notifications", label: "Notifications", icon: FiBell },
@@ -83,6 +85,7 @@ export default function Settings() {
         {tab === "business" && <BusinessTab form={form} patch={patch} editable={editable} onSave={() => save(["business"])} saving={saving} />}
         {tab === "bank" && <BankTab form={form} patch={patch} editable={editable} onSave={() => save(["bank"])} saving={saving} />}
         {tab === "invoice" && <InvoiceTab form={form} patch={patch} editable={editable} onSave={() => save(["invoice"])} saving={saving} />}
+        {tab === "documents" && <DocumentsTab form={form} patch={patch} editable={editable} onSave={() => save(["documents", "billing", "thermal"])} saving={saving} />}
         {tab === "printing" && <PrintingTab form={form} patch={patch} editable={editable} onSave={() => save(["thermal"])} saving={saving} />}
         {tab === "billing" && <BillingTab form={form} patch={patch} editable={editable} onSave={() => save(["cd", "prefixes"])} saving={saving} />}
         {tab === "notifications" && <NotificationsTab form={form} patch={patch} editable={editable} onSave={() => save(["notifications"])} saving={saving} />}
@@ -201,6 +204,104 @@ function InvoiceTab({ form, patch, editable, onSave, saving }) {
             <Toggle label="Purchase vouchers" hint="Usually off — you're the one paying the supplier" checked={qrTypes.purchase === true} onChange={(v) => setQrType("purchase", v)} disabled={!editable} />
           </div>
         )}
+      </div>
+    </TabCard>
+  );
+}
+
+// Per-document print control: which elements appear on each document, per-document terms/footer
+// text, and the composer defaults (payment method + thermal width). Mirrors server/settings.js
+// `documents` + `billing`. `APPLIES` marks which elements each document can actually render, so
+// the matrix never shows a toggle that would do nothing (e.g. a thermal receipt has no terms line).
+const DOC_COLS = [
+  { key: "a4", label: "A4 Invoice" },
+  { key: "thermal", label: "Thermal" },
+  { key: "gst", label: "Bill of Supply" },
+  { key: "challan", label: "Challan" },
+];
+const DOC_ELEMENTS = [
+  { key: "qr", label: "Payment QR" },
+  { key: "signature", label: "Signature" },
+  { key: "stamp", label: "Payment stamp" },
+  { key: "terms", label: "Terms" },
+  { key: "bank", label: "Bank block" },
+  { key: "remarks", label: "Remarks" },
+];
+const APPLIES = {
+  a4:      { qr: 1, signature: 1, stamp: 1, terms: 1, bank: 1, remarks: 1 },
+  thermal: { qr: 1, signature: 1, stamp: 1, terms: 0, bank: 0, remarks: 1 },
+  gst:     { qr: 1, signature: 1, stamp: 1, terms: 1, bank: 1, remarks: 1 },
+  challan: { qr: 1, signature: 1, stamp: 1, terms: 1, bank: 0, remarks: 1 },
+};
+const DOC_TEXT_FIELDS = { a4: ["terms", "footer"], thermal: ["footer"], gst: ["terms"], challan: ["terms"] };
+
+function DocumentsTab({ form, patch, editable, onSave, saving }) {
+  const docs = form.documents || {};
+  const billing = form.billing || {};
+  const th = form.thermal || {};
+  const setCol = (col, key, v) => patch("documents", { ...docs, [col]: { ...(docs[col] || {}), [key]: v } });
+  const isOn = (col, el) => { const d = docs[col]; return !d || d[el] === undefined ? true : d[el] !== false; };
+  return (
+    <TabCard title="Documents" subtitle="Control exactly what prints on each document type" icon={FiLayers} onSave={onSave} saving={saving} editable={editable}>
+      <div className="overflow-x-auto -mx-1 px-1">
+        <table className="w-full min-w-[540px] border-collapse">
+          <thead>
+            <tr>
+              <th className="text-left text-xs font-semibold text-muted pb-2 pr-3">Element</th>
+              {DOC_COLS.map((c) => <th key={c.key} className="text-center text-xs font-semibold text-ink-2 pb-2 px-2">{c.label}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            {DOC_ELEMENTS.map((el) => (
+              <tr key={el.key} className="border-t border-line">
+                <td className="text-sm text-ink py-2 pr-3">{el.label}</td>
+                {DOC_COLS.map((c) => (
+                  <td key={c.key} className="py-2 px-2">
+                    {APPLIES[c.key][el.key]
+                      ? <div className="flex justify-center"><Toggle checked={isOn(c.key, el.key)} onChange={(v) => setCol(c.key, el.key, v)} disabled={!editable} /></div>
+                      : <div className="text-center text-xs text-muted">—</div>}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-xs text-muted mt-2">The Challan defaults to no QR and no payment stamp — it carries no money. The QR also hides automatically once a bill is fully paid.</p>
+
+      <div className="mt-5 grid sm:grid-cols-2 gap-3">
+        {DOC_COLS.map((c) => (
+          <div key={c.key} className="rounded-xl border border-line p-3 space-y-2">
+            <p className="text-sm font-semibold text-ink">{c.label}</p>
+            {DOC_TEXT_FIELDS[c.key].includes("terms") && (
+              <Field label="Terms text (blank = use Invoice tab)"><textarea className="input h-16 py-2" value={docs[c.key]?.termsText ?? ""} onChange={(e) => setCol(c.key, "termsText", e.target.value)} disabled={!editable} /></Field>
+            )}
+            {DOC_TEXT_FIELDS[c.key].includes("footer") && (
+              <Field label="Footer text (blank = use Invoice tab)"><input className="input" value={docs[c.key]?.footerText ?? ""} onChange={(e) => setCol(c.key, "footerText", e.target.value)} disabled={!editable} /></Field>
+            )}
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-5 rounded-xl border border-line p-4 space-y-4">
+        <div>
+          <p className="text-sm font-semibold text-ink mb-2">Default payment method</p>
+          <div className="flex flex-wrap gap-2">
+            {PAYMENT_METHODS.map((m) => (
+              <button key={m} type="button" onClick={() => patch("billing", { ...billing, defaultPaymentMethod: m })} disabled={!editable}
+                className={cx("btn btn-sm", (billing.defaultPaymentMethod || "Cash") === m ? "btn-primary" : "btn-ghost")}>{m}</button>
+            ))}
+          </div>
+          <p className="text-xs text-muted mt-1.5">Preselected in the sale / purchase composer (truck sales still fall back to Credit when unset).</p>
+        </div>
+        <div>
+          <p className="text-sm font-semibold text-ink mb-2">Default thermal paper width</p>
+          <div className="flex gap-2">
+            {["58", "80"].map((w) => (
+              <button key={w} type="button" onClick={() => patch("thermal", { ...th, width: w })} disabled={!editable} className={cx("btn btn-sm", th.width === w ? "btn-primary" : "btn-ghost")}>{w} mm</button>
+            ))}
+          </div>
+        </div>
       </div>
     </TabCard>
   );

@@ -5,6 +5,8 @@
 // UPI would otherwise produce a blank QR on thermal/PNG/PDF).
 // The `qrcode` library is loaded lazily so it never bloats the main bundle.
 
+import { docKeyForFormat, docPref } from "./docPrefs";
+
 // Balance still owed on a bill, in whole rupees (invoice money fields are already rupees).
 // A scan-to-pay QR only makes sense while this is > 0 — once the bill is settled there is
 // nothing left to collect. Note `?? ` (not `||`) so a genuine 0 due is respected instead
@@ -32,9 +34,14 @@ export function qrEnabledFor(settings, invoice, format) {
   return types[key] !== false;
 }
 
-// A scannable QR should appear only when it's enabled for the type AND money is still due.
+// A scannable QR should appear only when it's enabled for the type, enabled for this document
+// (the per-document admin toggle), AND money is still due. The combined "challan+gst" job maps
+// to the Bill-of-Supply key so the image is still generated; the Challan sheet re-checks its own
+// "challan" toggle when it renders, suppressing it there independently.
 export function qrVisible(settings, invoice, format) {
-  return qrEnabledFor(settings, invoice, format) && dueRupees(invoice) > 0;
+  return qrEnabledFor(settings, invoice, format)
+    && docPref(settings, docKeyForFormat(format), "qr")
+    && dueRupees(invoice) > 0;
 }
 
 export function upiUri(settings, invoice) {

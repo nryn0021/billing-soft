@@ -2,6 +2,7 @@ import { useApp } from "../context/AppContext";
 import { cx, QrPlaceholder } from "../ui";
 import { amountInWords, formatDateLong, inr2, num, paymentStamp, txProductLabel } from "../lib/format";
 import { qrVisible } from "../lib/qr";
+import { docPref, docText } from "../lib/docPrefs";
 
 /* Payment-status rubber stamp — green (paid) / orange (part-paid) / red (unpaid). */
 function PaymentStamp({ invoice, className, style }) {
@@ -60,6 +61,14 @@ function StandardInvoice({ invoice, settings, format, qr }) {
   const b = settings.business || {};
   const bank = settings.bank || {};
   const inv = settings.invoice || {};
+  const dk = format === "thermal" ? "thermal" : "a4"; // per-document element toggles
+  const showBank = docPref(settings, dk, "bank");
+  const showRemarks = docPref(settings, dk, "remarks");
+  const showStamp = docPref(settings, dk, "stamp");
+  const showSignature = docPref(settings, dk, "signature");
+  const showTerms = docPref(settings, dk, "terms");
+  const termsText = docText(settings, dk, "terms", inv.terms);
+  const footerText = docText(settings, dk, "footer", inv.footer);
 
   return (
     <div className="print-root" data-format={format === "thermal" ? "thermal" : "a4"}>
@@ -96,13 +105,15 @@ function StandardInvoice({ invoice, settings, format, qr }) {
             <div className="inv-kv"><span>Payment mode</span><b>{invoice.paymentMethod}</b></div>
             {invoice.partyBankAccount && <div className="inv-kv"><span>Bank / IFSC</span><b>{invoice.partyBankAccount} · {invoice.partyBankIfsc}</b></div>}
           </div>
-          <div className="inv-box">
-            <h3>Pay to</h3>
-            <div className="inv-kv"><span>Bank</span><b>{bank.name}</b></div>
-            <div className="inv-kv"><span>A/C No.</span><b>{bank.account}</b></div>
-            <div className="inv-kv"><span>IFSC</span><b>{bank.ifsc}</b></div>
-            <div className="inv-kv"><span>Branch</span><b>{bank.branch}</b></div>
-          </div>
+          {showBank && (
+            <div className="inv-box">
+              <h3>Pay to</h3>
+              <div className="inv-kv"><span>Bank</span><b>{bank.name}</b></div>
+              <div className="inv-kv"><span>A/C No.</span><b>{bank.account}</b></div>
+              <div className="inv-kv"><span>IFSC</span><b>{bank.ifsc}</b></div>
+              <div className="inv-kv"><span>Branch</span><b>{bank.branch}</b></div>
+            </div>
+          )}
         </div>
 
         <table>
@@ -125,9 +136,9 @@ function StandardInvoice({ invoice, settings, format, qr }) {
           <div className="inv-words">
             <span>Amount in words</span>
             <div style={{ fontWeight: 600, marginTop: 2 }}>{amountInWords(Math.round(invoice.netAmount))} Rupees Only</div>
-            {invoice.remarks && <p style={{ color: "var(--i-soft)", fontSize: 11, marginTop: 8 }}>Remarks: {invoice.remarks}</p>}
-            <p style={{ color: "var(--i-soft)", fontSize: 11, marginTop: 8 }}>{inv.terms}</p>
-            <PaymentStamp invoice={invoice} style={{ marginTop: 16 }} />
+            {showRemarks && invoice.remarks && <p style={{ color: "var(--i-soft)", fontSize: 11, marginTop: 8 }}>Remarks: {invoice.remarks}</p>}
+            {showTerms && <p style={{ color: "var(--i-soft)", fontSize: 11, marginTop: 8 }}>{termsText}</p>}
+            {showStamp && <PaymentStamp invoice={invoice} style={{ marginTop: 16 }} />}
           </div>
           <div className="inv-totals">
             <div className="row"><span style={{ color: "var(--i-soft)" }}>Gross amount</span><b>{inr2.format(invoice.gross)}</b></div>
@@ -149,8 +160,8 @@ function StandardInvoice({ invoice, settings, format, qr }) {
           </div>
         )}
 
-        <Signature b={b} inv={inv} />
-        <p className="inv-note">{inv.footer} · This is a computer-generated {isSale ? "invoice" : "voucher"}.</p>
+        {showSignature && <Signature b={b} inv={inv} />}
+        <p className="inv-note">{footerText} · This is a computer-generated {isSale ? "invoice" : "voucher"}.</p>
       </div>
     </div>
   );
@@ -166,7 +177,15 @@ function BillOfSupplySheet({ invoice, settings, qr }) {
   const bank = settings.bank || {};
   const m = invoice.meta || {};
   const rateQtl = invoice.rate * 100;
-  const showQr = qrVisible(settings, invoice, "gst");
+  // Per-document element toggles (Settings → Documents · Bill of Supply). QR also re-checks the
+  // "gst" key inside qrVisible, so this stays correct inside the combined challan+gst job.
+  const showQr = qrVisible(settings, invoice, "gst") && docPref(settings, "gst", "qr");
+  const showBank = docPref(settings, "gst", "bank");
+  const showStamp = docPref(settings, "gst", "stamp");
+  const showSignature = docPref(settings, "gst", "signature");
+  const showRemarks = docPref(settings, "gst", "remarks");
+  const showTerms = docPref(settings, "gst", "terms");
+  const termsText = docText(settings, "gst", "terms", settings.invoice?.terms || "In no case goods will be taken back or exchanged.");
   // Signed adjustment row helper (+/- prefix; negative deducts).
   const adjRow = (label, value) => value != null && value !== 0 && (
     <tr><td colSpan={6} className="r">{label}</td><td className="r">{value < 0 ? "- " : "+ "}{inr2.format(Math.abs(value))}</td></tr>
@@ -250,38 +269,44 @@ function BillOfSupplySheet({ invoice, settings, qr }) {
               <tr>
                 <td style={{ width: "60%", verticalAlign: "top", paddingTop: 6 }}>
                   <div className="words"><span className="doc-sub b">Amount in words</span><div style={{ fontWeight: 700 }}>{amountInWords(Math.round(invoice.netAmount))} Rupees Only</div></div>
-                  <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "flex-start" }}>
-                    <div className="kbox" style={{ flex: 1 }}>
-                      <div className="k">Bank details</div>
-                      <div><b>{bank.name}</b> · Banka</div>
-                      <div>A/c No.: <b>{bank.account}</b></div>
-                      <div>IFSC: <b>{bank.ifsc}</b></div>
-                      <div>UPI: <b>{bank.upi}</b></div>
+                  {(showBank || (showQr && qr)) && (
+                    <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "flex-start" }}>
+                      {showBank && (
+                        <div className="kbox" style={{ flex: 1 }}>
+                          <div className="k">Bank details</div>
+                          <div><b>{bank.name}</b> · Banka</div>
+                          <div>A/c No.: <b>{bank.account}</b></div>
+                          <div>IFSC: <b>{bank.ifsc}</b></div>
+                          <div>UPI: <b>{bank.upi}</b></div>
+                        </div>
+                      )}
+                      {showQr && qr && (
+                        <div style={{ textAlign: "center" }}>
+                          <img src={qr} alt="Payment QR" width={78} height={78} style={{ border: "1px solid var(--d-line)" }} />
+                          <div style={{ fontSize: 8.5, color: "var(--d-soft)" }}>Scan &amp; Pay</div>
+                        </div>
+                      )}
                     </div>
-                    {showQr && qr && (
-                      <div style={{ textAlign: "center" }}>
-                        <img src={qr} alt="Payment QR" width={78} height={78} style={{ border: "1px solid var(--d-line)" }} />
-                        <div style={{ fontSize: 8.5, color: "var(--d-soft)" }}>Scan &amp; Pay</div>
-                      </div>
-                    )}
-                  </div>
+                  )}
                   <div style={{ marginTop: 6, fontSize: 10 }}>Broker: <b>{m.brokerName || "—"}{m.brokerMob ? ` · ${m.brokerMob}` : ""}</b></div>
-                  {invoice.remarks && <div style={{ marginTop: 4, fontSize: 10, color: "var(--d-soft)" }}>Remarks: {invoice.remarks}</div>}
-                  <PaymentStamp invoice={invoice} className="compact" style={{ marginTop: 10 }} />
+                  {showRemarks && invoice.remarks && <div style={{ marginTop: 4, fontSize: 10, color: "var(--d-soft)" }}>Remarks: {invoice.remarks}</div>}
+                  {showStamp && <PaymentStamp invoice={invoice} className="compact" style={{ marginTop: 10 }} />}
                 </td>
                 <td style={{ verticalAlign: "top" }}>
-                  <div className="foot-sign">
-                    <div style={{ fontSize: 11 }}>For <b>{b.name}</b></div>
-                    <div className="sig-name" style={{ margin: "6px 0 2px" }}>{b.owner}</div>
-                    <div style={{ fontSize: 11 }}>{b.owner}, Proprietor</div>
-                    <div className="stamp">Authorised Signatory / Stamp</div>
-                  </div>
+                  {showSignature && (
+                    <div className="foot-sign">
+                      <div style={{ fontSize: 11 }}>For <b>{b.name}</b></div>
+                      <div className="sig-name" style={{ margin: "6px 0 2px" }}>{b.owner}</div>
+                      <div style={{ fontSize: 11 }}>{b.owner}, Proprietor</div>
+                      <div className="stamp">Authorised Signatory / Stamp</div>
+                    </div>
+                  )}
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
-        <p style={{ fontSize: 10, color: "var(--d-soft)", marginTop: 6 }}>Terms: {settings.invoice?.terms || "In no case goods will be taken back or exchanged."}</p>
+        {showTerms && <p style={{ fontSize: 10, color: "var(--d-soft)", marginTop: 6 }}>Terms: {termsText}</p>}
       </div>
   );
 }
@@ -293,7 +318,14 @@ function ChallanSheet({ invoice, settings, qr }) {
   const b = settings.business || {};
   const bank = settings.bank || {};
   const m = invoice.meta || {};
-  const showQr = qrVisible(settings, invoice, "challan");
+  // A challan is a transport builty — it carries no money. By default the payment QR and status
+  // stamp are OFF (Settings → Documents · Challan); both stay independently togglable.
+  const showQr = qrVisible(settings, invoice, "challan") && docPref(settings, "challan", "qr");
+  const showStamp = docPref(settings, "challan", "stamp");
+  const showSignature = docPref(settings, "challan", "signature");
+  const showRemarks = docPref(settings, "challan", "remarks");
+  const showTerms = docPref(settings, "challan", "terms"); // off by default — a challan is minimal
+  const termsText = docText(settings, "challan", "terms", settings.invoice?.terms || "");
   const row = (k, v) => <tr><td className="band b" style={{ width: 96 }}>{k}</td><td>{v || "—"}</td></tr>;
   return (
       <div className="doc-sheet">
@@ -346,7 +378,7 @@ function ChallanSheet({ invoice, settings, qr }) {
             </tbody>
           </table>
 
-          {invoice.remarks && <div style={{ padding: "4px 6px", fontSize: 10, color: "var(--d-soft)" }}>Remarks: {invoice.remarks}</div>}
+          {showRemarks && invoice.remarks && <div style={{ padding: "4px 6px", fontSize: 10, color: "var(--d-soft)" }}>Remarks: {invoice.remarks}</div>}
 
           <table className="noborder">
             <tbody>
@@ -354,7 +386,7 @@ function ChallanSheet({ invoice, settings, qr }) {
                 <td style={{ verticalAlign: "bottom" }}>
                   <div>Broker: <b>{m.brokerName || "—"}{m.brokerMob ? ` · ${m.brokerMob}` : ""}</b></div>
                   <div>Transport: <b>{m.transportName || "—"}{m.transportMob ? ` · ${m.transportMob}` : ""}</b></div>
-                  <PaymentStamp invoice={invoice} className="compact" style={{ marginTop: 8 }} />
+                  {showStamp && <PaymentStamp invoice={invoice} className="compact" style={{ marginTop: 8 }} />}
                 </td>
                 {showQr && qr && (
                   <td style={{ width: 96, textAlign: "center", verticalAlign: "bottom" }}>
@@ -363,13 +395,16 @@ function ChallanSheet({ invoice, settings, qr }) {
                   </td>
                 )}
                 <td style={{ width: 190, textAlign: "center", verticalAlign: "bottom" }}>
-                  <div className="sig-name">{b.owner}</div>
-                  <div className="stamp">Signature / Stamp · {b.owner}, Proprietor</div>
+                  {showSignature && (<>
+                    <div className="sig-name">{b.owner}</div>
+                    <div className="stamp">Signature / Stamp · {b.owner}, Proprietor</div>
+                  </>)}
                 </td>
               </tr>
             </tbody>
           </table>
         </div>
+        {showTerms && termsText && <p style={{ fontSize: 10, color: "var(--d-soft)", marginTop: 6 }}>Terms: {termsText}</p>}
       </div>
   );
 }

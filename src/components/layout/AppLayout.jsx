@@ -71,7 +71,7 @@ export default function AppLayout() {
   ];
 
   return (
-    <div className="min-h-screen bg-bg text-ink">
+    <div className="app-root min-h-screen bg-bg text-ink">
       {/* mobile backdrop */}
       <AnimatePresence>
         {mobileNav && !isDesktop && (

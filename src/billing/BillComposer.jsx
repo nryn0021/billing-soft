@@ -27,7 +27,9 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
   const [quantity, setQuantity] = useState("");
   const [unit, setUnit] = useState("quintal");
   const [rate, setRate] = useState(String(data.products[0]?.baseRate || ""));
-  const [paymentMethod, setPaymentMethod] = useState("Cash"); // Cash ticked by default
+  // Admin-configurable default (Settings → Documents · Default payment method); Cash otherwise.
+  const defaultPay = settings.billing?.defaultPaymentMethod || "Cash";
+  const [paymentMethod, setPaymentMethod] = useState(defaultPay);
   const [paidAmount, setPaidAmount] = useState("");
   const [applyDiscount, setApplyDiscount] = useState(false); // discount box only shows when ticked
   const [discount, setDiscount] = useState("");
@@ -89,7 +91,7 @@ export function BillComposer({ type: initialType, defaultBranch, onClose }) {
   };
   const changeType = (next) => {
     setType(next);
-    setPaymentMethod("Cash");
+    setPaymentMethod(defaultPay);
     if (next === "sale") setApplyCd(false);
     setParty(blankParty); setPartyQuery("");
   };

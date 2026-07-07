@@ -257,13 +257,24 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.02em; marg
 .print-root { display: none; }
 
 @media print {
-  @page { size: A4; margin: 12mm; }
+  @page { size: A4; margin: 8mm; }
   html, body { background: #ffffff !important; }
-  body * { visibility: hidden !important; }
-  .print-root, .print-root * { visibility: visible !important; }
-  .print-root { display: block !important; position: absolute; inset: 0; margin: 0; }
+  /* Collapse the live app so it contributes ZERO height — the old visibility:hidden approach
+     kept every element's layout box, and #root's min-height:100vh plus the tall page content
+     spawned 1-2 trailing blank pages. display:none removes them from the page box entirely.
+     We keep only the chain body > #root > .app-root > .print-root visible.
+     Portaled overlays (Modals/Drawers/Toaster mount on <body>) are killed via body > *:not(#root). */
+  html, body, #root, .app-root { min-height: 0 !important; height: auto !important; }
+  body > *:not(#root) { display: none !important; }
+  .app-root > *:not(.print-root) { display: none !important; }
+  .print-root { display: block !important; position: static; inset: auto; margin: 0; }
   .no-print { display: none !important; }
   .invoice-sheet { box-shadow: none !important; border: none !important; }
+  /* Neutralise each sheet's own fixed width/margin so a 210mm sheet no longer overflows the
+     printable width (210 − 2×8mm) into an extra wrap page. Keep sheets from splitting mid-way. */
+  .invoice-sheet, .doc-sheet { width: auto !important; max-width: 100% !important; margin: 0 !important; }
+  .doc-sheet { padding: 0 !important; }
+  .invoice-sheet, .doc-sheet, .doc-sheet .frame { break-inside: avoid; }
 }
 
 /* Thermal 80mm roll */

@@ -4,6 +4,7 @@
 // WhatsApp/native share and PDF.
 
 import { paymentStamp } from "./format";
+import { docPref, docText } from "./docPrefs";
 
 const DPI = 300;
 const mmToPx = (mm) => Math.round((mm / 25.4) * DPI);
@@ -35,6 +36,12 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
   const tone = "#000000";
   const b = settings.business || {}; const bank = settings.bank || {};
   const scale = W / mmToPx(80); // font scale relative to 80mm baseline
+  // Per-document element toggles (Settings → Documents · Thermal). The QR itself is already
+  // gated upstream (makeInvoiceQr returns "" when the thermal QR is off), so we only gate the
+  // stamp banner, remarks and signature here; the footer text can be overridden per document.
+  const showStamp = docPref(settings, "thermal", "stamp");
+  const showRemarks = docPref(settings, "thermal", "remarks");
+  const showSignature = docPref(settings, "thermal", "signature");
 
   // Measure pass on a scratch canvas, then draw for real (two-pass so height fits content).
   const measure = document.createElement("canvas").getContext("2d");
@@ -73,24 +80,28 @@ export async function renderThermalReceipt(invoice, settings, qrDataUrl, { width
   rule(tone);
   // Payment-status stamp — thermal is monochrome, so it's a bold bordered banner rather
   // than a colour stamp (green/orange/red only apply to the A4/PDF/on-screen bills).
-  const ps = paymentStamp(invoice);
-  const stampText = ps.state === "paid"
-    ? `PAID${invoice.paymentMethod ? " - " + String(invoice.paymentMethod).toUpperCase() : ""}`
-    : `BALANCE DUE: INR ${money(invoice.dueAmount)}`;
-  push(`*** ${stampText} ***`, 22, "bold", "center", 6, tone);
-  rule(tone);
+  if (showStamp) {
+    const ps = paymentStamp(invoice);
+    const stampText = ps.state === "paid"
+      ? `PAID${invoice.paymentMethod ? " - " + String(invoice.paymentMethod).toUpperCase() : ""}`
+      : `BALANCE DUE: INR ${money(invoice.dueAmount)}`;
+    push(`*** ${stampText} ***`, 22, "bold", "center", 6, tone);
+    rule(tone);
+  }
   if (amountInWords) push(`Rupees ${amountInWords(Math.round(invoice.netAmount))} Only`, 17, "normal", "center", 8);
-  if (invoice.remarks) push(`Remarks: ${invoice.remarks}`, 15, "normal", "center", 8);
+  if (showRemarks && invoice.remarks) push(`Remarks: ${invoice.remarks}`, 15, "normal", "center", 8);
   // Proprietor signature line on every receipt.
-  push(`For ${b.name || "the mill"}`, 16, "normal", "right", 2);
-  if (b.owner) push(`${b.owner}, Proprietor`, 18, "bold", "right", 8);
+  if (showSignature) {
+    push(`For ${b.name || "the mill"}`, 16, "normal", "right", 2);
+    if (b.owner) push(`${b.owner}, Proprietor`, 18, "bold", "right", 8);
+  }
 
   // qrDataUrl is already "" when the QR is off for this bill type or the bill is paid
   // (makeInvoiceQr gates it), so loading it is enough — no separate showQr check here.
   const qrImg = await loadImage(qrDataUrl);
   const qrSize = qrImg ? Math.round(cw * 0.5) : 0;
 
-  const footer = settings.invoice?.footer || "Thank you for your business.";
+  const footer = docText(settings, "thermal", "footer", settings.invoice?.footer || "Thank you for your business.");
 
   // Height calculation
   let h = pad;

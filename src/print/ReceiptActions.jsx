@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { FiDownload, FiFileText, FiImage, FiPrinter, FiShare2, FiTruck } from "react-icons/fi";
+import { FiDownload, FiFileText, FiImage, FiLayers, FiPrinter, FiShare2, FiTruck } from "react-icons/fi";
 import { useApp } from "../context/AppContext";
 import { Button, Segmented } from "../ui";
 import { amountInWords } from "../lib/format";
@@ -69,6 +69,10 @@ export function ReceiptActions({ invoice }) {
             <Button variant="info" size="sm" icon={FiFileText} onClick={() => printInvoice(invoice, "gst")}>Bill of Supply</Button>
             <Button variant="ghost" size="sm" icon={FiPrinter} onClick={() => printInvoice(invoice, "challan")}>Challan</Button>
           </div>
+          {/* Both documents in one print job (Challan then Bill of Supply) — pick "Save as PDF"
+              in the print dialog to download both together as a single 2-page file. */}
+          <Button variant="ghost" size="sm" icon={FiLayers} className="w-full" onClick={() => printInvoice(invoice, "challan+gst")}>Challan + Bill of Supply</Button>
+          <p className="text-[11px] text-muted">Tip: choose “Save as PDF” in the print dialog to download both pages as one file.</p>
         </div>
       )}
       <div className="flex items-center justify-between">

@@ -33,6 +33,17 @@ export const DEFAULT_SETTINGS = {
     logoText: "JM",
   },
   thermal: { width: "80" }, // "58" | "80"
+  // Per-document element visibility + text overrides. Admin controls exactly what prints on
+  // each document type (Settings → Documents). Every element defaults ON so existing behaviour
+  // is preserved — EXCEPT the Challan, which never carries money, so its QR + payment stamp are
+  // OFF by default. `termsText`/`footerText` empty → inherit the Invoice tab's terms/footer.
+  documents: {
+    a4:      { qr: true,  signature: true, stamp: true,  terms: true, bank: true,  remarks: true, termsText: "", footerText: "" },
+    thermal: { qr: true,  signature: true, stamp: true,  terms: true, bank: true,  remarks: true, termsText: "", footerText: "" },
+    gst:     { qr: true,  signature: true, stamp: true,  terms: true, bank: true,  remarks: true, termsText: "", footerText: "" },
+    challan: { qr: false, signature: true, stamp: false, terms: false, bank: false, remarks: true, termsText: "", footerText: "" },
+  },
+  billing: { defaultPaymentMethod: "Cash" }, // preselected payment method in new bill composers
   cd: { enabled: true, rate: 2.5, threshold: 20000 }, // CD deduction rule (paise threshold applied server-side)
   prefixes: { sale: "SAL", purchase: "PUR" },
   financialYearStartMonth: 4,

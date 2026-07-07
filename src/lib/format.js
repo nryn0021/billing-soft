@@ -12,12 +12,16 @@ export const num0 = new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 })
 export function paymentStamp(invoice) {
   // Same fallback chain as qr.js dueRupees() so the stamp and the scan-to-pay QR never
   // disagree (e.g. a "PAID" stamp next to a live QR) when dueAmount is absent.
-  const due = Math.max(0, Math.round(invoice?.dueAmount ?? invoice?.netAmount ?? 0));
+  // Exact due (keeps paise for the label); a rounded copy decides the paid/unpaid state so a
+  // sub-rupee residue never flips a settled bill back to "DUE".
+  const due = Math.max(0, invoice?.dueAmount ?? invoice?.netAmount ?? 0);
+  const dueWhole = Math.round(due);
   const paid = Math.max(0, Math.round(invoice?.paidAmount ?? 0));
   const method = (invoice?.paymentMethod || "").trim();
-  if (due <= 0) return { state: "paid", label: "PAID", sub: method ? `via ${method}` : "Paid in full", amount: 0 };
-  if (paid > 0) return { state: "partial", label: `${inr.format(due)} DUE`, sub: "Partially paid", amount: due };
-  return { state: "unpaid", label: `${inr.format(due)} DUE`, sub: "Payment pending", amount: due };
+  if (dueWhole <= 0) return { state: "paid", label: "PAID", sub: method ? `via ${method}` : "Paid in full", amount: 0 };
+  // Show paise on the DUE amount (e.g. "₹1,234.50 DUE") — the mill deals in exact figures.
+  if (paid > 0) return { state: "partial", label: `${inr2.format(due)} DUE`, sub: "Partially paid", amount: due };
+  return { state: "unpaid", label: `${inr2.format(due)} DUE`, sub: "Payment pending", amount: due };
 }
 
 // Compact money for KPI tiles: ₹1.2L, ₹3.4Cr, etc.
