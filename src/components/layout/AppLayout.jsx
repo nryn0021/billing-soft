@@ -5,6 +5,7 @@ import {
   FiBarChart2, FiBell, FiCheck, FiChevronLeft, FiChevronRight, FiCommand, FiFileText, FiGrid, FiHome,
   FiInfo, FiLock, FiLogOut, FiMenu, FiPackage, FiPlus, FiSearch, FiSettings, FiShield, FiSliders,
   FiUser, FiUserCheck, FiUsers, FiX, FiArrowDownLeft, FiArrowUpRight, FiChevronDown, FiCornerDownLeft, FiTruck,
+  FiMapPin, FiDatabase,
 } from "react-icons/fi";
 import { api } from "../../api";
 import { useApp } from "../../context/AppContext";
@@ -23,6 +24,8 @@ const NAV = [
   { to: "/inventory", label: "Stock & Inventory", icon: FiPackage, perm: "inventory.view" },
   { to: "/rates", label: "Rate Book", icon: FiSliders, perm: "rates.view" },
   { to: "/reports", label: "Reports", icon: FiBarChart2, perm: "reports.view" },
+  { to: "/tracking", label: "Truck Tracking", icon: FiMapPin, perm: "tracking.view" },
+  { to: "/tally", label: "Tally Sync", icon: FiDatabase, perm: "tally.export" },
   { to: "/audit", label: "Audit Log", icon: FiShield, perm: "audit.view" },
   { to: "/users", label: "Users & Access", icon: FiUserCheck, perm: "users.view" },
   { to: "/settings", label: "Settings", icon: FiSettings, perm: "settings.view" },
@@ -35,6 +38,8 @@ const TITLES = {
   "/inventory": ["Stock & Inventory", "Live grain stock across branches"],
   "/rates": ["Rate Book", "Today's default buying and selling rates"],
   "/reports": ["Reports & Analytics", "Performance across any reporting period"],
+  "/tracking": ["Truck Tracking", "Live dispatch status of every truck, grouped by destination"],
+  "/tally": ["Tally Sync", "Import & export parties and bills in Tally format"],
   "/audit": ["Audit Log", "Every change, with user, time, IP and device"],
   "/users": ["Users & Access", "Secure logins and branch permissions"],
   "/settings": ["Settings", "Preferences, security and business profile"],

@@ -45,6 +45,18 @@ export const PERMISSION_GROUPS = [
     ],
   },
   {
+    group: "Truck tracking", items: [
+      { key: "tracking.view", label: "View truck tracking" },
+      { key: "tracking.update", label: "Update truck status" },
+    ],
+  },
+  {
+    group: "Tally", items: [
+      { key: "tally.export", label: "Export to Tally" },
+      { key: "tally.import", label: "Import from Tally" },
+    ],
+  },
+  {
     group: "Administration", items: [
       { key: "users.view", label: "View users" },
       { key: "users.manage", label: "Create / manage users" },
@@ -68,6 +80,8 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     "inventory.view", "inventory.adjust", "inventory.transfer", "inventory.export",
     "rates.view", "rates.edit",
     "reports.view", "reports.export",
+    "tracking.view", "tracking.update",
+    "tally.export", "tally.import",
     "audit.view", "settings.view",
   ],
   biller: [
@@ -75,6 +89,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
     "bills.view", "bills.create", "bills.print",
     "parties.view", "parties.create", "parties.edit",
     "inventory.view",
+    "tracking.view", "tracking.update",
   ],
 };
 

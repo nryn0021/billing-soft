@@ -12,6 +12,8 @@ const Parties = lazy(() => import("./pages/Parties"));
 const Inventory = lazy(() => import("./pages/Inventory"));
 const Rates = lazy(() => import("./pages/Rates"));
 const Reports = lazy(() => import("./pages/Reports"));
+const TruckTracking = lazy(() => import("./pages/TruckTracking"));
+const Tally = lazy(() => import("./pages/Tally"));
 const Audit = lazy(() => import("./pages/Audit"));
 const Users = lazy(() => import("./pages/Users"));
 const Settings = lazy(() => import("./pages/Settings"));
@@ -40,6 +42,8 @@ const router = createBrowserRouter([
       { path: "inventory", element: page(Inventory) },
       { path: "rates", element: guarded("rates.view", Rates) },
       { path: "reports", element: guarded("reports.view", Reports) },
+      { path: "tracking", element: guarded("tracking.view", TruckTracking) },
+      { path: "tally", element: guarded("tally.export", Tally) },
       { path: "audit", element: guarded("audit.view", Audit) },
       { path: "users", element: guarded("users.view", Users) },
       { path: "settings", element: guarded("settings.view", Settings) },

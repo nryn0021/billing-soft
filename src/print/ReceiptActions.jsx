@@ -2,7 +2,7 @@ import { useState } from "react";
 import { FiDownload, FiFileText, FiImage, FiLayers, FiPrinter, FiShare2, FiTruck } from "react-icons/fi";
 import { useApp } from "../context/AppContext";
 import { Button, Segmented } from "../ui";
-import { amountInWords } from "../lib/format";
+import { amountInWords, billFileName } from "../lib/format";
 import { makeInvoiceQr } from "../lib/qr";
 import { downloadReceipt, printReceiptImage, receiptPdf, renderThermalReceipt, shareReceipt } from "../lib/thermal";
 
@@ -83,11 +83,11 @@ export function ReceiptActions({ invoice }) {
         <Button variant="ghost" size="sm" icon={FiPrinter} onClick={() => printInvoice(invoice, "a4")}>A4 print</Button>
         <Button variant="ghost" size="sm" icon={FiFileText} onClick={a4Pdf} disabled={busy === "a4pdf"}>A4 PDF</Button>
         <Button variant="ghost" size="sm" icon={FiPrinter} disabled={!!busy} onClick={withBusy("tp", async () => { const r = await genReceipt(); printReceiptImage(r.dataUrl, r.widthMm); })}>Thermal print</Button>
-        <Button variant="ghost" size="sm" icon={FiImage} disabled={!!busy} onClick={withBusy("png", async () => { const r = await genReceipt(); downloadReceipt(r.dataUrl, invoice.id); })}>Save PNG</Button>
-        <Button variant="ghost" size="sm" icon={FiDownload} disabled={!!busy} onClick={withBusy("tpdf", async () => { const r = await genReceipt(); await receiptPdf(r.dataUrl, invoice.id, r.widthMm, r.height, r.width); })}>Thermal PDF</Button>
+        <Button variant="ghost" size="sm" icon={FiImage} disabled={!!busy} onClick={withBusy("png", async () => { const r = await genReceipt(); downloadReceipt(r.dataUrl, billFileName(invoice)); })}>Save PNG</Button>
+        <Button variant="ghost" size="sm" icon={FiDownload} disabled={!!busy} onClick={withBusy("tpdf", async () => { const r = await genReceipt(); await receiptPdf(r.dataUrl, billFileName(invoice), r.widthMm, r.height, r.width); })}>Thermal PDF</Button>
         <Button variant="primary" size="sm" icon={FiShare2} disabled={!!busy} onClick={withBusy("wa", async () => {
           const r = await genReceipt();
-          const name = `${invoice.type === "sale" ? "sale" : "purchase"}-bill-${invoice.id}`;
+          const name = billFileName(invoice);
           const shared = await shareReceipt(r.dataUrl, name, caption(), settings.notifications?.whatsapp?.ownerNumber);
           toast(shared ? "Bill image ready to send on WhatsApp" : "Bill image downloaded — attach it in the WhatsApp chat that opened", shared ? "success" : "info");
         })}>WhatsApp</Button>

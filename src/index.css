@@ -274,6 +274,10 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -0.02em; marg
      printable width (210 − 2×8mm) into an extra wrap page. Keep sheets from splitting mid-way. */
   .invoice-sheet, .doc-sheet { width: auto !important; max-width: 100% !important; margin: 0 !important; }
   .doc-sheet { padding: 0 !important; }
+  /* The A4 invoice-sheet's own 16mm/14mm padding stacks ON TOP of the @page 8mm margin, pushing
+     the content past 297mm into a blank 2nd page. Drop it to a thin inner pad so the sheet fills
+     the full printable A4 area on a direct browser print (PDF export is unaffected — that's jsPDF). */
+  .print-root:not([data-format="thermal"]) .invoice-sheet { padding: 2mm 0 !important; }
   .invoice-sheet, .doc-sheet, .doc-sheet .frame { break-inside: avoid; }
 }
 

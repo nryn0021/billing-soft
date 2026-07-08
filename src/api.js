@@ -81,6 +81,12 @@ export const api = {
   async updateCounters(patch) {
     return request("/api/counters", { method: "PUT", body: JSON.stringify(patch) });
   },
+  async updateTracking(billId, patch) {
+    return request(`/api/bills/${encodeURIComponent(billId)}/tracking`, { method: "PATCH", body: JSON.stringify(patch) });
+  },
+  async importTally(xml) {
+    return request("/api/tally/import", { method: "POST", body: JSON.stringify({ xml }) });
+  },
   async adjustStock(payload) {
     return request("/api/inventory/adjust", { method: "POST", body: JSON.stringify(payload) });
   },

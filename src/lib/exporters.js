@@ -9,6 +9,12 @@ function dispCell(col, row) {
   const v = rawCell(col, row);
   return col.fmt ? col.fmt(v, row) : v;
 }
+// jsPDF's core Helvetica font has no glyph for ₹ (U+20B9) or other non-Latin symbols, so a
+// ₹-formatted cell prints as garbage boxes. Swap ₹ for "Rs " and drop any remaining non-Latin
+// codepoints for PDF cells only (Excel/Word keep the raw ₹ — those fonts render it fine).
+function pdfCell(col, row) {
+  return String(dispCell(col, row)).replace(/₹\s?/g, "Rs ").replace(/[^\x20-\x7E]/g, "");
+}
 
 /** Excel (.xlsx) via SheetJS. Uses raw values so numbers stay numeric. */
 export async function exportXlsx(filename, { columns, rows, sheetName = "Report" }) {
@@ -32,7 +38,7 @@ export async function exportPdfTable(filename, { title, subtitle, columns, rows 
   autoTable(doc, {
     startY: 74,
     head: [columns.map((c) => c.label)],
-    body: rows.map((row) => columns.map((c) => String(dispCell(c, row)))),
+    body: rows.map((row) => columns.map((c) => pdfCell(c, row))),
     styles: { fontSize: 9, cellPadding: 5 },
     headStyles: { fillColor: [21, 118, 79], textColor: 255 },
     alternateRowStyles: { fillColor: [244, 247, 242] },
@@ -101,7 +107,7 @@ function drawPdfStamp(doc, ps, x, y, w) {
  */
 export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }) {
   const { jsPDF } = await import("jspdf");
-  const { paymentStamp } = await import("./format");
+  const { paymentStamp, billFileName } = await import("./format");
   const { docPref, docText } = await import("./docPrefs");
   const doc = new jsPDF({ unit: "mm", format: "a4" });
   const isSale = invoice.type === "sale";
@@ -245,5 +251,5 @@ export async function invoicePdf(invoice, settings, qrDataUrl, { amountInWords }
   doc.setFont("helvetica", "normal"); doc.setFontSize(7.5); doc.setTextColor(110, 110, 110);
   doc.text(`${footerText} · This is a computer-generated ${isSale ? "invoice" : "voucher"}.`, 105, Math.min(y, 288), { align: "center" });
 
-  doc.save(`${invoice.id}.pdf`);
+  doc.save(`${billFileName(invoice)}.pdf`);
 }

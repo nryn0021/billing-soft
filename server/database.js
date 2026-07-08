@@ -411,6 +411,15 @@ function sanitizeTruckMeta(raw) {
   return out;
 }
 
+// A stable, unique key for a truck-owner party derived from the vehicle number. The parties
+// table enforces a unique (tenant, phone_normalized) index, so real customers (10-digit phones)
+// and truck owners (this "veh-…" key) never collide, and the SAME vehicle across trips resolves
+// to the SAME owner party — so its freight payable accumulates instead of duplicating.
+function ownerPartyKey(vehicleNo) {
+  const v = String(vehicleNo || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+  return v ? `veh-${v}` : "";
+}
+
 // Convert stored paise fields back to rupees for the client/print layer.
 function mapMeta(meta) {
   if (!meta || typeof meta !== "object") return null;
@@ -775,9 +784,38 @@ export async function createBill(user, payload, ctx) {
     billDisplayId = await nextBillId(tx, user.tenantId, type, branchCode);
     // Truck sales get auto-incrementing Bill-of-Supply + Challan numbers (assigned atomically
     // inside this transaction, overriding anything the client sent).
+    let ownerParty = null;
+    const freightPaise = billMeta ? (billMeta.toPayPaise || 0) : 0;
     if (billMeta) {
       billMeta.invoiceNo = await nextDocNumber(tx, user.tenantId, "invoice");
       billMeta.challanNo = await nextDocNumber(tx, user.tenantId, "challan");
+      // Every truck bill starts life "dispatched" for the tracking board.
+      billMeta.tracking = { status: "dispatched", driverPaid: false, freightPaise, freightCleared: false };
+      // Book the freight "To Pay" as a payable to the truck owner, keyed by vehicle no.
+      // The owner is a distinct party from the grain buyer: money the mill OWES (creditor).
+      const ownerKey = ownerPartyKey(billMeta.vehicleNo);
+      if (freightPaise > 0 && ownerKey) {
+        const ownerName = billMeta.ownerName || billMeta.transportName || "Truck owner";
+        const ownerDisplayName = `${ownerName} · ${String(billMeta.vehicleNo).toUpperCase()}`.slice(0, 100);
+        [ownerParty] = await tx.select().from(parties)
+          .where(and(eq(parties.tenantId, user.tenantId), eq(parties.phoneNormalized, ownerKey))).limit(1);
+        if (!ownerParty) {
+          const ownerDisplayId = await nextPartyId(tx, user.tenantId);
+          [ownerParty] = await tx.insert(parties).values({
+            tenantId: user.tenantId,
+            displayId: ownerDisplayId,
+            name: ownerDisplayName,
+            phoneNormalized: ownerKey,
+            phoneDisplay: billMeta.ownerMob || billMeta.driverMob || String(billMeta.vehicleNo).toUpperCase(),
+            address: `Truck owner · Vehicle ${String(billMeta.vehicleNo).toUpperCase()}`,
+            kind: "supplier",
+            balancePaise: 0,
+            balanceType: "creditor",
+          }).returning();
+        }
+        billMeta.tracking.ownerParty = ownerParty.displayId;
+        billMeta.tracking.ownerName = ownerDisplayName;
+      }
     }
     const [bill] = await tx
       .insert(bills)
@@ -853,6 +891,21 @@ export async function createBill(user, payload, ctx) {
       });
     }
 
+    // Freight payable to the truck owner (tracked separately from the grain buyer's dues).
+    if (ownerParty && freightPaise > 0) {
+      await tx
+        .update(parties)
+        .set({ balancePaise: sql`${parties.balancePaise} + ${freightPaise}`, balanceType: "creditor" })
+        .where(and(eq(parties.id, ownerParty.id), eq(parties.tenantId, user.tenantId)));
+      await tx.insert(ledgerEntries).values({
+        tenantId: user.tenantId,
+        billId: bill.id,
+        partyId: ownerParty.id,
+        entryType: "creditor",
+        amountPaise: freightPaise,
+      });
+    }
+
     if (ratePaise !== product.baseRatePaise) {
       await writeAudit(tx, {
         tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "override",
@@ -872,6 +925,153 @@ export async function createBill(user, payload, ctx) {
 
   const data = await getBootstrap(user);
   return { bill: data.transactions.find((item) => item.id === billDisplayId), data };
+}
+
+// ---------------------------------------------------------------------------
+// Truck tracking — a live dispatch status kept inside the bill's JSON meta.
+// Additive & migration-safe: `meta.tracking` sits alongside the truck document
+// fields. The buyer's grain-payment ledger is NEVER touched here; the only ledger
+// effect is settling the freight PAYABLE to the truck owner: toggling driverPaid
+// clears (or restores) that owner-party creditor balance booked at bill creation.
+// ---------------------------------------------------------------------------
+
+const TRACK_STATES = ["dispatched", "on_the_way", "reached", "stuck", "empty", "complete"];
+
+export async function updateBillTracking(user, billDisplayId, patch, ctx) {
+  if (!["admin", "manager", "biller"].includes(user.role)) throw new Error("Your role cannot update tracking.");
+  const status = TRACK_STATES.includes(patch?.status) ? patch.status : null;
+  if (!status) throw new Error("Tracking status is invalid.");
+  const place = optionalText(patch?.place, "Place note", 120);
+  const note = optionalText(patch?.note, "Note", 240);
+  const driverPaid = Boolean(patch?.driverPaid);
+
+  await db.transaction(async (tx) => {
+    const conditions = [eq(bills.tenantId, user.tenantId), eq(bills.displayId, billDisplayId)];
+    const [bill] = await tx.select().from(bills).where(and(...conditions)).limit(1).for("update");
+    if (!bill) throw new Error("Bill not found.");
+    if (!bill.meta || bill.meta.kind !== "truck") throw new Error("Only truck bills can be tracked.");
+    // Biller isolation: can only touch bills in their own branch.
+    if (user.role === "biller") {
+      const [branch] = await tx.select({ code: branches.code }).from(branches).where(eq(branches.id, bill.branchId)).limit(1);
+      if (!branch || branch.code !== user.branchId) throw new Error("You can only update your branch's trucks.");
+    }
+    const prev = bill.meta.tracking || {};
+    const freightPaise = Number(prev.freightPaise || 0);
+    const wasCleared = Boolean(prev.freightCleared);
+    // driverPaid only becomes meaningful once the truck is empty/complete; keep whatever was set otherwise.
+    const nextPaid = status === "empty" || status === "complete" ? driverPaid : Boolean(prev.driverPaid);
+    let freightCleared = wasCleared;
+
+    // Settle / un-settle the owner's freight payable to match the driverPaid toggle.
+    if (freightPaise > 0 && prev.ownerParty) {
+      if (nextPaid && !wasCleared) {
+        // Driver paid → reduce the owner's outstanding payable (clamped at zero).
+        await tx.update(parties)
+          .set({ balancePaise: sql`greatest(0, ${parties.balancePaise} - ${freightPaise})` })
+          .where(and(eq(parties.tenantId, user.tenantId), eq(parties.displayId, prev.ownerParty)));
+        freightCleared = true;
+      } else if (!nextPaid && wasCleared) {
+        // Toggled back to unpaid → restore the payable.
+        await tx.update(parties)
+          .set({ balancePaise: sql`${parties.balancePaise} + ${freightPaise}`, balanceType: "creditor" })
+          .where(and(eq(parties.tenantId, user.tenantId), eq(parties.displayId, prev.ownerParty)));
+        freightCleared = false;
+      }
+    }
+
+    const tracking = {
+      ...prev,
+      status,
+      place: place || prev.place || "",
+      note: note || prev.note || "",
+      driverPaid: nextPaid,
+      freightCleared,
+      updatedAt: new Date().toISOString(),
+    };
+    const nextMeta = { ...bill.meta, tracking };
+    await tx.update(bills).set({ meta: nextMeta }).where(and(...conditions));
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "tracking",
+      action: "update", entity: "bill", entityId: billDisplayId, newValue: status,
+      description: `Truck ${bill.meta.vehicleNo || billDisplayId} → ${status.replace(/_/g, " ")}${nextPaid !== Boolean(prev.driverPaid) ? (nextPaid ? " · driver paid" : " · driver unpaid") : ""}`,
+      metadata: bill.meta.placeOfSupply || "", ctx,
+    });
+  });
+  return getBootstrap(user);
+}
+
+// ---------------------------------------------------------------------------
+// Tally import — bring existing party ledgers in from a Tally masters XML export.
+// Parties are matched by normalized phone (falling back to case-insensitive name) so
+// re-importing is idempotent: an existing party is updated in place, never duplicated.
+// Opening balances become the party's outstanding dues (debtor/creditor). No bills are
+// fabricated (see server/tally.js for why), so stock and the rate book are untouched.
+// ---------------------------------------------------------------------------
+
+export async function importTallyParties(user, ledgers, ctx) {
+  if (!["admin", "manager"].includes(user.role)) throw new Error("Only admins and managers can import Tally data.");
+  const list = Array.isArray(ledgers) ? ledgers.slice(0, 20000) : [];
+  if (!list.length) throw new Error("No party ledgers found in that Tally file.");
+  let created = 0, updated = 0, skipped = 0;
+
+  await db.transaction(async (tx) => {
+    for (const raw of list) {
+      const name = String(raw?.name || "").trim().slice(0, 100);
+      if (!name) { skipped++; continue; }
+      const phoneDisplay = String(raw?.phone || "").trim().slice(0, 30);
+      const phoneNormalized = normalizePhone(phoneDisplay);
+      const address = String(raw?.address || "").trim().slice(0, 240) || "Imported from Tally";
+      const gstin = cleanGstin(raw?.gstin);
+      const kind = raw?.kind === "supplier" ? "supplier" : "customer";
+      const balanceRupees = Number(raw?.openingBalance);
+      const balancePaise = Number.isFinite(balanceRupees) ? Math.max(0, Math.round(Math.abs(balanceRupees) * 100)) : 0;
+      const balanceType = kind === "supplier" ? "creditor" : "debtor";
+
+      // Match by phone first (the app's natural key), then by name.
+      let existing = null;
+      if (phoneNormalized.length === 10) {
+        [existing] = await tx.select().from(parties).where(and(eq(parties.tenantId, user.tenantId), eq(parties.phoneNormalized, phoneNormalized))).limit(1);
+      }
+      if (!existing) {
+        [existing] = await tx.select().from(parties).where(and(eq(parties.tenantId, user.tenantId), sql`lower(${parties.name}) = lower(${name})`)).limit(1);
+      }
+      if (existing) {
+        await tx.update(parties).set({
+          name,
+          address: existing.address || address,
+          gstin: gstin || existing.gstin || null,
+          kind: existing.kind !== kind && existing.kind !== "both" ? "both" : existing.kind,
+          updatedAt: new Date(),
+        }).where(and(eq(parties.id, existing.id), eq(parties.tenantId, user.tenantId)));
+        updated++;
+      } else {
+        // A synthetic phone keeps the NOT-NULL/display columns valid when Tally has none.
+        const phN = phoneNormalized.length === 10 ? phoneNormalized : "";
+        const displayId = await nextPartyId(tx, user.tenantId);
+        await tx.insert(parties).values({
+          tenantId: user.tenantId,
+          displayId,
+          name,
+          phoneNormalized: phN,
+          phoneDisplay: phoneDisplay || "—",
+          address,
+          kind,
+          gstin: gstin || null,
+          balancePaise,
+          balanceType,
+        });
+        created++;
+      }
+    }
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "tally",
+      action: "import", entity: "party", entityId: "tally", newValue: String(created + updated),
+      description: `Tally import: ${created} added, ${updated} updated, ${skipped} skipped`, ctx,
+    });
+  });
+
+  const data = await getBootstrap(user);
+  return { summary: { created, updated, skipped, total: list.length }, data };
 }
 
 export async function updateRate(user, productId, rate, ctx) {

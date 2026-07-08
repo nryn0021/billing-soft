@@ -20,6 +20,7 @@ import {
   getBootstrap,
   getCounters,
   getSettings,
+  importTallyParties,
   listAudit,
   listStockMovements,
   listUsers,
@@ -29,12 +30,14 @@ import {
   sessionUser,
   setUserActive,
   transferStock,
+  updateBillTracking,
   updateCounters,
   updateRate,
   updateSettings,
   updateTransporter,
   updateVehicle,
 } from "./database.js";
+import { parseTallyLedgers } from "./tally.js";
 import { closePool, pool } from "./db.js";
 import { newSessionToken, validatePassword, verifyPassword } from "./security.js";
 
@@ -82,11 +85,11 @@ function sessionCookie(token, maxAge) {
   return `jmd_session=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Strict${secureCookie ? "; Secure" : ""}${maxAge ? `; Max-Age=${maxAge}` : ""}`;
 }
 
-async function body(request) {
+async function body(request, maxBytes = 1024 * 1024) {
   let raw = "";
   for await (const chunk of request) {
     raw += chunk;
-    if (raw.length > 1024 * 1024) throw new Error("Request is too large.");
+    if (raw.length > maxBytes) throw new Error("Request is too large.");
   }
   if (!raw) return {};
   try { return JSON.parse(raw); } catch { throw new Error("Invalid JSON request."); }
@@ -327,6 +330,25 @@ async function api(request, response, url) {
     if (!user) return;
     if (!requirePerm(user, response, "parties.edit")) return;
     return json(response, 200, { data: await updateVehicle(user, decodeURIComponent(vehicleMatch[1]), await body(request), reqCtx(request)) });
+  }
+
+  // ---- Truck tracking (status kept in the bill's JSON meta) ----
+  const trackMatch = url.pathname.match(/^\/api\/bills\/([^/]+)\/tracking$/);
+  if (trackMatch && request.method === "PATCH") {
+    const user = await requireAuth(request, response, ["admin", "manager", "biller"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "tracking.update")) return;
+    return json(response, 200, { data: await updateBillTracking(user, decodeURIComponent(trackMatch[1]), await body(request), reqCtx(request)) });
+  }
+
+  // ---- Tally import (party ledgers from a Tally masters XML export) ----
+  if (url.pathname === "/api/tally/import" && request.method === "POST") {
+    const user = await requireAuth(request, response, ["admin", "manager"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "tally.import")) return;
+    const input = await body(request, 16 * 1024 * 1024); // Tally masters exports can be large
+    const ledgers = parseTallyLedgers(String(input.xml || ""));
+    return json(response, 200, await importTallyParties(user, ledgers, reqCtx(request)));
   }
 
   // ---- Document numbering (Bill of Supply invoice + Challan serials) ----

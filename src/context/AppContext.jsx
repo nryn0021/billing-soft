@@ -77,6 +77,21 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
     return result.data;
   }, [toast]);
 
+  // Truck tracking — patch a bill's dispatch status; server returns refreshed bootstrap data.
+  const updateTracking = useCallback(async (billId, patch) => {
+    const result = await api.updateTracking(billId, patch);
+    setData(result.data);
+    return result.data;
+  }, []);
+
+  const importTally = useCallback(async (xml) => {
+    const result = await api.importTally(xml);
+    setData(result.data);
+    const s = result.summary;
+    toast(`Tally import: ${s.created} added, ${s.updated} updated`, "success");
+    return result.summary;
+  }, [toast]);
+
   const refresh = useCallback(async () => {
     const result = await api.session();
     setUser(result.user);
@@ -90,9 +105,10 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
   const value = useMemo(() => ({
     user, data, setData, settings, permissions, can,
     toasts, toast, dismissToast,
-    printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters, refresh, logout,
+    printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters,
+    updateTracking, importTally, refresh, logout,
     theme, setTheme,
-  }), [user, data, settings, permissions, can, toasts, toast, dismissToast, printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters, refresh, logout, theme, setTheme]);
+  }), [user, data, settings, permissions, can, toasts, toast, dismissToast, printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters, updateTracking, importTally, refresh, logout, theme, setTheme]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

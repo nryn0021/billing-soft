@@ -43,6 +43,18 @@ export const PERMISSION_CATALOG = [
     ],
   },
   {
+    group: "Truck tracking", items: [
+      { key: "tracking.view", label: "View truck tracking" },
+      { key: "tracking.update", label: "Update truck status" },
+    ],
+  },
+  {
+    group: "Tally", items: [
+      { key: "tally.export", label: "Export to Tally" },
+      { key: "tally.import", label: "Import from Tally" },
+    ],
+  },
+  {
     group: "Administration", items: [
       { key: "users.view", label: "View users" },
       { key: "users.manage", label: "Create / manage users" },
@@ -65,6 +77,6 @@ export function defaultRolePermissions(role, allKeys) {
     return allKeys.filter((k) => !k.startsWith("users.") && k !== "settings.manage" && k !== "bills.create" && k !== "backup.manage");
   }
   // biller
-  return ["dashboard.view", "bills.view", "bills.create", "bills.print", "parties.view", "parties.create", "parties.edit", "inventory.view"]
+  return ["dashboard.view", "bills.view", "bills.create", "bills.print", "parties.view", "parties.create", "parties.edit", "inventory.view", "tracking.view", "tracking.update"]
     .filter((k) => allKeys.includes(k));
 }

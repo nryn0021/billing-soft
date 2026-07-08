@@ -229,15 +229,15 @@ function buildReport(id, { scopeTx, branchTx, data, period }) {
       return {
         title: "Party ledger", subtitle: "Outstanding balances (all time)", exportName: "ledger",
         kpis: [
-          { label: "Total receivable", value: rows.filter((r) => r.type === "debtor").reduce((s, r) => s + r.balance, 0), icon: FiTrendingUp, tone: "success" },
-          { label: "Total payable", value: rows.filter((r) => r.type === "creditor").reduce((s, r) => s + r.balance, 0), icon: FiShoppingBag, tone: "danger" },
+          { label: "Total credit", value: rows.filter((r) => r.type === "debtor").reduce((s, r) => s + r.balance, 0), icon: FiTrendingUp, tone: "success" },
+          { label: "Total debit", value: rows.filter((r) => r.type === "creditor").reduce((s, r) => s + r.balance, 0), icon: FiShoppingBag, tone: "danger" },
           { label: "Parties with dues", value: rows.length, icon: FiCreditCard, tone: "brand", subtitle: "open ledgers" },
           { label: "Net position", value: rows.reduce((s, r) => s + (r.type === "debtor" ? r.balance : -r.balance), 0), icon: FiActivity, tone: "accent" },
         ],
         chart: null,
         columns: [
           { key: "id", label: "ID" }, { key: "name", label: "Party" }, { key: "phone", label: "Phone" },
-          { label: "Type", value: (r) => r.type, fmt: (v) => (v === "debtor" ? "Receivable" : "Payable") },
+          { label: "Type", value: (r) => r.type, fmt: (v) => (v === "debtor" ? "Credit" : "Debit") },
           { label: "Balance", value: (r) => r.balance, right: true, fmt: money },
         ],
         rows,

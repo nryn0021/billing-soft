@@ -34,6 +34,8 @@ export default function Bills() {
   const [params, setParams] = useSearchParams();
   const [filter, setFilter] = useState("all");
   const [query, setQuery] = useState("");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
   const [exportOpen, setExportOpen] = useState(false);
   const [focused, setFocused] = useState(null);
   const q = useDebounced(query);
@@ -49,11 +51,19 @@ export default function Bills() {
 
   const rows = useMemo(() => {
     const term = q.trim().toLowerCase();
+    // Date bounds are inclusive: `from` at 00:00:00, `to` at 23:59:59 local time.
+    const fromT = from ? new Date(`${from}T00:00:00`).getTime() : null;
+    const toT = to ? new Date(`${to}T23:59:59.999`).getTime() : null;
     return data.transactions
       .filter((t) => branch === "All branches" || t.branch === branch)
       .filter((t) => filter === "all" || t.type === filter)
+      .filter((t) => {
+        if (fromT == null && toT == null) return true;
+        const d = new Date(t.date).getTime();
+        return (fromT == null || d >= fromT) && (toT == null || d <= toT);
+      })
       .filter((t) => !term || t.id.toLowerCase().includes(term) || t.party.toLowerCase().includes(term) || t.product.toLowerCase().includes(term));
-  }, [data.transactions, branch, filter, q]);
+  }, [data.transactions, branch, filter, q, from, to]);
 
   return (
     <div className="space-y-4 max-w-[1500px] mx-auto">
@@ -86,6 +96,15 @@ export default function Bills() {
           <Button variant="purchase" icon={FiArrowDownLeft} onClick={() => openBill("purchase")} className="hidden sm:inline-flex">Purchase</Button>
           <Button variant="primary" icon={FiPlus} onClick={() => openBill("sale")}>New sale</Button>
         </div>
+      </div>
+
+      {/* Date-range filter — bills are stored with their created date, so any window can be mapped. */}
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <span className="text-xs font-medium text-muted uppercase tracking-wide">Date</span>
+        <input type="date" value={from} max={to || undefined} onChange={(e) => setFrom(e.target.value)} className="input w-auto" aria-label="From date" />
+        <span className="text-muted">to</span>
+        <input type="date" value={to} min={from || undefined} onChange={(e) => setTo(e.target.value)} className="input w-auto" aria-label="To date" />
+        {(from || to) && <button onClick={() => { setFrom(""); setTo(""); }} className="text-xs text-muted hover:text-ink inline-flex items-center gap-1"><FiX /> Clear dates</button>}
       </div>
 
       <Card className="overflow-hidden">

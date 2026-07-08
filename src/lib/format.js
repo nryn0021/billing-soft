@@ -68,6 +68,22 @@ export function timeAgo(value) {
 }
 export function isSameDay(a, b) { return new Date(a).toDateString() === new Date(b).toDateString(); }
 
+/**
+ * Canonical download filename for a saved bill (no extension).
+ * Shape: `<billno>_<yyyy-mm-dd>_<hh-mm-ss>_<sale|purchase>` — all lowercase, no spaces,
+ * every separator an underscore, so two bills can never collide on disk.
+ * e.g. sale_1042_2026-07-07_14-30-05_sale
+ */
+export function billFileName(invoice) {
+  const d = new Date(invoice?.date || Date.now());
+  const p = (n) => String(n).padStart(2, "0");
+  const date = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  const time = `${p(d.getHours())}-${p(d.getMinutes())}-${p(d.getSeconds())}`;
+  const kind = invoice?.type === "sale" ? "sale" : "purchase";
+  const id = String(invoice?.id || "bill").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return `${id}_${date}_${time}_${kind}`.toLowerCase();
+}
+
 export function productLabel(p) { return p?.hindiName ? `${p.name} · ${p.hindiName}` : p?.name || ""; }
 export function txProductLabel(t) { return t?.productHindi ? `${t.product} · ${t.productHindi}` : t?.product || ""; }
 export function initials(name) {
