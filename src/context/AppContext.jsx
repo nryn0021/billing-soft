@@ -41,6 +41,13 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
     return result.bill;
   }, [printInvoice, toast]);
 
+  const deleteBill = useCallback(async (billId) => {
+    const result = await api.deleteBill(billId);
+    setData(result.data);
+    toast(`Bill ${billId} deleted`, "success");
+    return result.data;
+  }, [toast]);
+
   const updateRate = useCallback(async (productId, rate) => {
     const result = await api.updateRate(productId, rate);
     setData(result.data);
@@ -84,6 +91,13 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
     return result.data;
   }, []);
 
+  const recordPayment = useCallback(async (partyId, payment) => {
+    const result = await api.recordPayment(partyId, payment);
+    setData(result.data);
+    toast("Payment recorded", "success");
+    return result.data;
+  }, [toast]);
+
   const importTally = useCallback(async (xml) => {
     const result = await api.importTally(xml);
     setData(result.data);
@@ -105,10 +119,10 @@ export function AppProvider({ user: initialUser, data: initialData, onSignedOut,
   const value = useMemo(() => ({
     user, data, setData, settings, permissions, can,
     toasts, toast, dismissToast,
-    printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters,
-    updateTracking, importTally, refresh, logout,
+    printJob, printInvoice, saveBill, deleteBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters,
+    updateTracking, recordPayment, importTally, refresh, logout,
     theme, setTheme,
-  }), [user, data, settings, permissions, can, toasts, toast, dismissToast, printJob, printInvoice, saveBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters, updateTracking, importTally, refresh, logout, theme, setTheme]);
+  }), [user, data, settings, permissions, can, toasts, toast, dismissToast, printJob, printInvoice, saveBill, deleteBill, updateRate, saveSettings, saveTransporter, saveVehicle, saveCounters, updateTracking, recordPayment, importTally, refresh, logout, theme, setTheme]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

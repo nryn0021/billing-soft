@@ -290,6 +290,34 @@ export const ledgerEntries = pgTable("ledger_entries", {
   createdAt: createdAt(),
 });
 
+// Standalone payments settled against a party's running balance — money RECEIVED from a
+// debtor (direction 'in') or PAID to a creditor (direction 'out'), independent of any single
+// bill. Reduces the party's outstanding balance. Used for ad-hoc receipts/payments to any
+// customer/supplier and for freight (bhada) paid to a truck-owner party keyed by vehicle no.
+export const partyPayments = pgTable(
+  "party_payments",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tenantId: uuid("tenant_id")
+      .notNull()
+      .references(() => tenants.id, { onDelete: "cascade" }),
+    partyId: uuid("party_id")
+      .notNull()
+      .references(() => parties.id),
+    direction: text("direction").notNull(), // 'in' = received from debtor, 'out' = paid to creditor
+    amountPaise: paise("amount_paise").notNull(),
+    method: text("method").notNull(),
+    note: text("note"),
+    createdBy: uuid("created_by").references(() => users.id),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index("idx_party_payments_party").on(t.tenantId, t.partyId, t.createdAt),
+    check("party_payments_direction_check", sql`${t.direction} in ('in','out')`),
+    check("party_payments_amount_check", sql`${t.amountPaise} > 0`),
+  ],
+);
+
 export const auditEvents = pgTable(
   "audit_events",
   {
@@ -426,6 +454,7 @@ export const schema = {
   payments,
   stockMovements,
   ledgerEntries,
+  partyPayments,
   auditEvents,
   appSettings,
   passwordResets,

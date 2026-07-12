@@ -151,7 +151,7 @@ function BillDrawer({ tx, onClose }) {
   return (
     <Drawer open={Boolean(tx)} onClose={onClose} title={tx?.id} subtitle={tx ? `${tx.kind === "truck" ? "Truck sale · Bill of Supply" : tx.type === "sale" ? "Sale invoice" : "Purchase voucher"} · ${formatDateLong(tx.date)}` : ""}
       footer={tx && <Button variant="ghost" onClick={onClose}>Close</Button>}>
-      {tx && <BillDetailBody tx={tx} />}
+      {tx && <BillDetailBody tx={tx} onDeleted={onClose} />}
     </Drawer>
   );
 }

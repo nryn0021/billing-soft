@@ -14,6 +14,7 @@ import {
   createTransporter,
   createUser,
   createVehicle,
+  deleteBill,
   deleteSession,
   findTenantBySlug,
   findUser,
@@ -26,6 +27,7 @@ import {
   listUsers,
   logAudit,
   recordFailedLogin,
+  recordPartyPayment,
   recordSuccessfulLogin,
   sessionUser,
   setUserActive,
@@ -217,6 +219,15 @@ async function api(request, response, url) {
     return json(response, 201, result);
   }
 
+  // Delete a bill (admin only) — reverses stock + ledgers atomically.
+  const billDeleteMatch = url.pathname.match(/^\/api\/bills\/([^/]+)$/);
+  if (billDeleteMatch && request.method === "DELETE") {
+    const user = await requireAuth(request, response, ["admin"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "bills.delete")) return;
+    return json(response, 200, { data: await deleteBill(user, decodeURIComponent(billDeleteMatch[1]), reqCtx(request)) });
+  }
+
   const rateMatch = url.pathname.match(/^\/api\/products\/([^/]+)\/rate$/);
   if (request.method === "PATCH" && rateMatch) {
     const user = await requireAuth(request, response, ["admin", "manager"]);
@@ -339,6 +350,15 @@ async function api(request, response, url) {
     if (!user) return;
     if (!requirePerm(user, response, "tracking.update")) return;
     return json(response, 200, { data: await updateBillTracking(user, decodeURIComponent(trackMatch[1]), await body(request), reqCtx(request)) });
+  }
+
+  // ---- Party payment (receipt from a debtor / payment to a creditor, incl. truck freight) ----
+  const partyPayMatch = url.pathname.match(/^\/api\/parties\/([^/]+)\/payments$/);
+  if (partyPayMatch && request.method === "POST") {
+    const user = await requireAuth(request, response, ["admin", "manager", "biller"]);
+    if (!user) return;
+    if (!requirePerm(user, response, "parties.payment")) return;
+    return json(response, 200, { data: await recordPartyPayment(user, decodeURIComponent(partyPayMatch[1]), await body(request), reqCtx(request)) });
   }
 
   // ---- Tally import (party ledgers from a Tally masters XML export) ----

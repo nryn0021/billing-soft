@@ -205,6 +205,9 @@ function InvoiceTab({ form, patch, editable, onSave, saving }) {
           </div>
         )}
       </div>
+      <div className="mt-3 rounded-xl border border-line p-4">
+        <Toggle label="Show QR on shared bill image" hint="Controls the WhatsApp / downloaded PNG picture only — printed bills are unaffected" checked={inv.shareQr !== false} onChange={(v) => set("shareQr", v)} disabled={!editable} />
+      </div>
     </TabCard>
   );
 }

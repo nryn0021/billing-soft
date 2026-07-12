@@ -14,6 +14,7 @@ export const PERMISSION_GROUPS = [
       { key: "bills.create", label: "Create bills" },
       { key: "bills.print", label: "Print / reprint bills" },
       { key: "bills.export", label: "Export bills" },
+      { key: "bills.delete", label: "Delete bills" },
     ],
   },
   {
@@ -21,6 +22,7 @@ export const PERMISSION_GROUPS = [
       { key: "parties.view", label: "View parties & ledgers" },
       { key: "parties.create", label: "Add parties" },
       { key: "parties.edit", label: "Edit parties" },
+      { key: "parties.payment", label: "Record receipts / payments" },
       { key: "parties.export", label: "Export parties" },
     ],
   },
@@ -76,7 +78,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
   manager: [
     "dashboard.view",
     "bills.view", "bills.print", "bills.export",
-    "parties.view", "parties.create", "parties.edit", "parties.export",
+    "parties.view", "parties.create", "parties.edit", "parties.payment", "parties.export",
     "inventory.view", "inventory.adjust", "inventory.transfer", "inventory.export",
     "rates.view", "rates.edit",
     "reports.view", "reports.export",
@@ -87,7 +89,7 @@ export const DEFAULT_ROLE_PERMISSIONS = {
   biller: [
     "dashboard.view",
     "bills.view", "bills.create", "bills.print",
-    "parties.view", "parties.create", "parties.edit",
+    "parties.view", "parties.create", "parties.edit", "parties.payment",
     "inventory.view",
     "tracking.view", "tracking.update",
   ],

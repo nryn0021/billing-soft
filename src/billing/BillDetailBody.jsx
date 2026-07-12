@@ -1,7 +1,9 @@
-import { FiFileText } from "react-icons/fi";
+import { useState } from "react";
+import { FiFileText, FiTrash2, FiAlertTriangle } from "react-icons/fi";
 import { ReceiptActions } from "../print/ReceiptActions";
+import { useApp } from "../context/AppContext";
 import { inr2, num, txProductLabel } from "../lib/format";
-import { cx } from "../ui";
+import { Button, Modal, cx } from "../ui";
 
 const signed = (v) => `${v < 0 ? "- " : "+ "}${inr2.format(Math.abs(v))}`;
 
@@ -9,11 +11,33 @@ const signed = (v) => `${v < 0 ? "- " : "+ "}${inr2.format(Math.abs(v))}`;
  * Full, read-only detail view of one bill — shared by the Bills page drawer and the
  * Parties-page linked-bill popup so both stay in sync. Renders the money breakdown
  * (incl. signed truck adjustments), transport/vehicle/broker meta, party GSTIN and remarks.
+ *
+ * `onDeleted` (optional) is called after an admin deletes the bill, so the parent drawer /
+ * popup can close itself — the bill no longer exists.
  */
-export function BillDetailBody({ tx }) {
+export function BillDetailBody({ tx, onDeleted }) {
   if (!tx) return null;
+  return <BillDetail tx={tx} onDeleted={onDeleted} />;
+}
+
+function BillDetail({ tx, onDeleted }) {
+  const { can, deleteBill, toast } = useApp();
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const canDelete = can("bills.delete");
   const m = tx.meta || {};
   const isTruck = tx.kind === "truck";
+
+  const doDelete = async () => {
+    setBusy(true);
+    try {
+      await deleteBill(tx.id);
+      setConfirm(false);
+      onDeleted?.();
+    } catch (e) {
+      toast(e.message || "Could not delete the bill", "danger");
+    } finally { setBusy(false); }
+  };
 
   const moneyRows = [
     ["Product", txProductLabel(tx)],
@@ -78,6 +102,28 @@ export function BillDetailBody({ tx }) {
 
       {tx.remarks && <p className="text-xs text-ink-2 bg-surface-2 border border-line rounded-xl px-3 py-2.5">Remarks: {tx.remarks}</p>}
       {tx.partyAddress && <p className="text-xs text-muted">Address: {tx.partyAddress}</p>}
+
+      {/* Admin-only: permanently delete this bill (reverses stock + all ledger entries). */}
+      {canDelete && (
+        <div className="pt-1">
+          <Button variant="ghost" size="sm" icon={FiTrash2} onClick={() => setConfirm(true)}
+            className="text-danger hover:bg-danger/10">Delete this bill</Button>
+        </div>
+      )}
+
+      <Modal open={confirm} onClose={() => !busy && setConfirm(false)} size="sm"
+        title="Delete bill?" subtitle={`${tx.id} · ${inr2.format(tx.netAmount)}`}
+        footer={<>
+          <Button variant="ghost" onClick={() => setConfirm(false)} disabled={busy}>Cancel</Button>
+          <Button variant="danger" icon={FiTrash2} onClick={doDelete} disabled={busy}>{busy ? "Deleting…" : "Delete permanently"}</Button>
+        </>}>
+        <div className="flex items-start gap-3">
+          <span className="grid place-items-center size-10 rounded-xl bg-danger/15 text-danger shrink-0"><FiAlertTriangle /></span>
+          <p className="text-sm text-ink-2">
+            This permanently removes bill <b>{tx.id}</b>. Stock is restored, and the party's due{isTruck ? " and the truck-owner's freight payable are" : " is"} reversed. This cannot be undone.
+          </p>
+        </div>
+      </Modal>
     </div>
   );
 }

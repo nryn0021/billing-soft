@@ -22,6 +22,7 @@ import {
   branches,
   ledgerEntries,
   parties,
+  partyPayments,
   passwordResets,
   payments,
   products,
@@ -507,12 +508,39 @@ export async function getBootstrap(user) {
     .where(eq(vehicles.tenantId, user.tenantId))
     .orderBy(sql`upper(${vehicles.vehicleNo})`);
   const transactions = (await transactionRows(user)).map(mapTransaction);
+  const paymentRows = await db
+    .select({
+      id: partyPayments.id,
+      partyCode: parties.displayId,
+      direction: partyPayments.direction,
+      amountPaise: partyPayments.amountPaise,
+      method: partyPayments.method,
+      note: partyPayments.note,
+      createdAt: partyPayments.createdAt,
+      by: users.displayName,
+    })
+    .from(partyPayments)
+    .innerJoin(parties, eq(parties.id, partyPayments.partyId))
+    .leftJoin(users, eq(users.id, partyPayments.createdBy))
+    .where(eq(partyPayments.tenantId, user.tenantId))
+    .orderBy(desc(partyPayments.createdAt))
+    .limit(2000);
   const settings = await getSettings(user.tenantId);
   const serials = await countersFor(user.tenantId);
   return {
     user,
     products: productRows.map(mapProduct),
     parties: partyRows.map(mapParty),
+    payments: paymentRows.map((p) => ({
+      id: p.id,
+      partyId: p.partyCode,
+      direction: p.direction,
+      amount: p.amountPaise / 100,
+      method: p.method,
+      note: p.note || "",
+      date: p.createdAt,
+      by: p.by || "—",
+    })),
     transporters: transporterRows.map(mapTransporter),
     vehicles: vehicleRows.map(mapVehicle),
     serials,
@@ -789,14 +817,25 @@ export async function createBill(user, payload, ctx) {
     if (billMeta) {
       billMeta.invoiceNo = await nextDocNumber(tx, user.tenantId, "invoice");
       billMeta.challanNo = await nextDocNumber(tx, user.tenantId, "challan");
-      // Every truck bill starts life "dispatched" for the tracking board.
-      billMeta.tracking = { status: "dispatched", driverPaid: false, freightPaise, freightCleared: false };
+      // Every truck bill starts life "dispatched" for the tracking board. The freight figures are
+      // copied into tracking so the owner-payable ledger shows the full picture — total bhada,
+      // advance already paid, and the "to pay" balance that is what the mill still OWES the driver.
+      billMeta.tracking = {
+        status: "dispatched", driverPaid: false, freightCleared: false,
+        freightPaise,
+        bharaPaise: billMeta.bharaPaise || 0,
+        advancePaise: billMeta.advancePaise || 0,
+      };
       // Book the freight "To Pay" as a payable to the truck owner, keyed by vehicle no.
       // The owner is a distinct party from the grain buyer: money the mill OWES (creditor).
       const ownerKey = ownerPartyKey(billMeta.vehicleNo);
       if (freightPaise > 0 && ownerKey) {
-        const ownerName = billMeta.ownerName || billMeta.transportName || "Truck owner";
-        const ownerDisplayName = `${ownerName} · ${String(billMeta.vehicleNo).toUpperCase()}`.slice(0, 100);
+        // The party NAME is the vehicle number itself (e.g. MH12AB1234) — the owner appears in
+        // Parties & Ledger exactly like any other creditor. The owner/driver name (if any) is kept
+        // in the address for reference.
+        const vehNo = String(billMeta.vehicleNo).toUpperCase();
+        const ownerName = billMeta.ownerName || billMeta.transportName || "";
+        const ownerAddress = `Truck freight · Vehicle ${vehNo}${ownerName ? ` · ${ownerName}` : ""}`.slice(0, 240);
         [ownerParty] = await tx.select().from(parties)
           .where(and(eq(parties.tenantId, user.tenantId), eq(parties.phoneNormalized, ownerKey))).limit(1);
         if (!ownerParty) {
@@ -804,17 +843,21 @@ export async function createBill(user, payload, ctx) {
           [ownerParty] = await tx.insert(parties).values({
             tenantId: user.tenantId,
             displayId: ownerDisplayId,
-            name: ownerDisplayName,
+            name: vehNo,
             phoneNormalized: ownerKey,
-            phoneDisplay: billMeta.ownerMob || billMeta.driverMob || String(billMeta.vehicleNo).toUpperCase(),
-            address: `Truck owner · Vehicle ${String(billMeta.vehicleNo).toUpperCase()}`,
+            phoneDisplay: billMeta.ownerMob || billMeta.driverMob || vehNo,
+            address: ownerAddress,
             kind: "supplier",
             balancePaise: 0,
             balanceType: "creditor",
           }).returning();
+        } else if (ownerParty.name !== vehNo) {
+          // Migrate parties created before this change (named "<owner> · <VEHNO>") to just the vehicle no.
+          await tx.update(parties).set({ name: vehNo }).where(and(eq(parties.id, ownerParty.id), eq(parties.tenantId, user.tenantId)));
+          ownerParty.name = vehNo;
         }
         billMeta.tracking.ownerParty = ownerParty.displayId;
-        billMeta.tracking.ownerName = ownerDisplayName;
+        billMeta.tracking.ownerName = vehNo;
       }
     }
     const [bill] = await tx
@@ -928,6 +971,73 @@ export async function createBill(user, payload, ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Bill deletion (admin only) — fully reverses a posted bill.
+//
+// A posted bill has side effects across four tables: stock (product level + a
+// stock_movements row), the party's outstanding due (balance + a ledger row),
+// the truck owner's freight payable (balance + ledger row) and the recorded
+// payment. Deleting must undo every one of them inside one transaction so stock
+// and ledgers stay consistent — otherwise a "deleted" bill would leave phantom
+// dues or a wrong stock count behind. Only an admin may do this.
+// ---------------------------------------------------------------------------
+
+export async function deleteBill(user, billDisplayId, ctx) {
+  if (user.role !== "admin") throw new Error("Only an administrator can delete a bill.");
+  await db.transaction(async (tx) => {
+    const [bill] = await tx
+      .select()
+      .from(bills)
+      .where(and(eq(bills.tenantId, user.tenantId), eq(bills.displayId, billDisplayId)))
+      .limit(1)
+      .for("update");
+    if (!bill) throw new Error("Bill not found.");
+
+    // 1) Reverse stock: a sale had removed grams (add them back); a purchase had added them (remove).
+    const [line] = await tx.select().from(billLines).where(and(eq(billLines.tenantId, user.tenantId), eq(billLines.billId, bill.id))).limit(1);
+    if (line) {
+      const restore = bill.billType === "purchase" ? -line.weightGrams : line.weightGrams;
+      const [product] = await tx.select().from(products).where(eq(products.id, line.productId)).limit(1).for("update");
+      if (product) {
+        const nextGrams = product.stockGrams + restore;
+        if (nextGrams < 0) throw new Error("Cannot delete: it would make stock negative. Adjust stock first.");
+        await tx.update(products).set({ stockGrams: nextGrams, updatedAt: new Date() }).where(eq(products.id, product.id));
+      }
+    }
+
+    // 2) Reverse the grain party's outstanding due booked for this bill (clamped at zero).
+    if (bill.duePaise > 0) {
+      await tx.update(parties)
+        .set({ balancePaise: sql`greatest(0, ${parties.balancePaise} - ${bill.duePaise})` })
+        .where(and(eq(parties.tenantId, user.tenantId), eq(parties.id, bill.partyId)));
+    }
+
+    // 3) Reverse the truck owner's freight payable — but only if it was still outstanding
+    //    (a driverPaid toggle already cleared it, so don't subtract twice).
+    const tracking = bill.meta?.tracking;
+    const freightPaise = Number(tracking?.freightPaise || 0);
+    if (tracking?.ownerParty && freightPaise > 0 && !tracking.freightCleared) {
+      await tx.update(parties)
+        .set({ balancePaise: sql`greatest(0, ${parties.balancePaise} - ${freightPaise})` })
+        .where(and(eq(parties.tenantId, user.tenantId), eq(parties.displayId, tracking.ownerParty)));
+    }
+
+    // 4) Remove dependent rows, then the bill itself (bill_lines has ON DELETE restrict).
+    await tx.delete(ledgerEntries).where(and(eq(ledgerEntries.tenantId, user.tenantId), eq(ledgerEntries.billId, bill.id)));
+    await tx.delete(payments).where(and(eq(payments.tenantId, user.tenantId), eq(payments.billId, bill.id)));
+    await tx.delete(stockMovements).where(and(eq(stockMovements.tenantId, user.tenantId), eq(stockMovements.billId, bill.id)));
+    await tx.delete(billLines).where(and(eq(billLines.tenantId, user.tenantId), eq(billLines.billId, bill.id)));
+    await tx.delete(bills).where(and(eq(bills.tenantId, user.tenantId), eq(bills.id, bill.id)));
+
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "bill",
+      action: "delete", entity: "bill", entityId: billDisplayId, oldValue: (bill.netPaise / 100).toFixed(2),
+      description: `${bill.billType === "sale" ? "Sale" : "Purchase"} bill ${billDisplayId} deleted`, ctx,
+    });
+  });
+  return getBootstrap(user);
+}
+
+// ---------------------------------------------------------------------------
 // Truck tracking — a live dispatch status kept inside the bill's JSON meta.
 // Additive & migration-safe: `meta.tracking` sits alongside the truck document
 // fields. The buyer's grain-payment ledger is NEVER touched here; the only ledger
@@ -995,6 +1105,68 @@ export async function updateBillTracking(user, billDisplayId, patch, ctx) {
       action: "update", entity: "bill", entityId: billDisplayId, newValue: status,
       description: `Truck ${bill.meta.vehicleNo || billDisplayId} → ${status.replace(/_/g, " ")}${nextPaid !== Boolean(prev.driverPaid) ? (nextPaid ? " · driver paid" : " · driver unpaid") : ""}`,
       metadata: bill.meta.placeOfSupply || "", ctx,
+    });
+  });
+  return getBootstrap(user);
+}
+
+// Payment methods accepted for a standalone party settlement. "Credit" is deliberately absent —
+// a payment is money that actually moved, never a deferral.
+const PAYMENT_METHODS = new Set(["Cash", "Online / Bank", "UPI", "Cheque", "Other"]);
+
+// Record a receipt from / payment to a party against its running balance. Works for any party:
+// money IN from a debtor customer, money OUT to a creditor supplier, or freight (bhada) OUT to a
+// truck-owner party keyed by vehicle no. Overpayment is REJECTED (not clamped), the balance can
+// only move toward zero, and it all happens inside one row-locked transaction. Billers allowed.
+export async function recordPartyPayment(user, partyDisplayId, input, ctx) {
+  if (!["admin", "manager", "biller"].includes(user.role)) throw new Error("Your role cannot record payments.");
+  const amountPaise = Math.round(Number(input?.amount) * 100);
+  if (!Number.isFinite(amountPaise) || amountPaise <= 0) throw new Error("Enter a payment amount greater than zero.");
+  if (amountPaise > MAX_MONEY_PAISE) throw new Error("That payment amount is too large.");
+  const method = PAYMENT_METHODS.has(input?.method) ? input.method : "Cash";
+  const note = optionalText(input?.note, "Note", 240);
+
+  let direction = "out";
+  await db.transaction(async (tx) => {
+    const [party] = await tx
+      .select()
+      .from(parties)
+      .where(and(eq(parties.tenantId, user.tenantId), eq(parties.displayId, partyDisplayId)))
+      .limit(1)
+      .for("update");
+    if (!party) throw new Error("Party not found.");
+    if (party.balancePaise <= 0) throw new Error("This party has no outstanding balance to settle.");
+    // Reject overpayment outright — the running balance may only move toward zero.
+    if (amountPaise > party.balancePaise) throw new Error("Payment exceeds the outstanding balance. Enter an amount up to the amount due.");
+    // A debtor owes the mill → this is money RECEIVED (in); a creditor is owed BY the mill → money PAID (out).
+    direction = party.balanceType === "debtor" ? "in" : "out";
+
+    await tx
+      .update(parties)
+      .set({ balancePaise: sql`${parties.balancePaise} - ${amountPaise}`, updatedAt: new Date() })
+      .where(and(eq(parties.id, party.id), eq(parties.tenantId, user.tenantId)));
+    await tx.insert(partyPayments).values({
+      tenantId: user.tenantId,
+      partyId: party.id,
+      direction,
+      amountPaise,
+      method,
+      note: note || null,
+      createdBy: user.id,
+    });
+    // Mirror it into the ledger so the double-entry view stays complete (opposite side of the due).
+    await tx.insert(ledgerEntries).values({
+      tenantId: user.tenantId,
+      billId: null,
+      partyId: party.id,
+      entryType: direction === "in" ? "creditor" : "debtor",
+      amountPaise,
+    });
+    await writeAudit(tx, {
+      tenantId: user.tenantId, actorUserId: user.id, actorName: user.displayName, eventKind: "payment",
+      action: "payment", entity: "party", entityId: partyDisplayId, newValue: String(amountPaise),
+      description: `${direction === "in" ? "Received" : "Paid"} ₹${(amountPaise / 100).toLocaleString("en-IN")} ${direction === "in" ? "from" : "to"} ${party.name} (${method})`,
+      metadata: note || "", ctx,
     });
   });
   return getBootstrap(user);

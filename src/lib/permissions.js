@@ -12,6 +12,7 @@ export const PERMISSION_CATALOG = [
       { key: "bills.create", label: "Create bills" },
       { key: "bills.print", label: "Print / reprint bills" },
       { key: "bills.export", label: "Export bills" },
+      { key: "bills.delete", label: "Delete bills" },
     ],
   },
   {
@@ -19,6 +20,7 @@ export const PERMISSION_CATALOG = [
       { key: "parties.view", label: "View parties & ledgers" },
       { key: "parties.create", label: "Add parties" },
       { key: "parties.edit", label: "Edit parties" },
+      { key: "parties.payment", label: "Record receipts / payments" },
       { key: "parties.export", label: "Export parties" },
     ],
   },
@@ -74,9 +76,9 @@ export const ADMIN_LOCKED_PERMISSIONS = ["settings.view", "settings.manage", "us
 export function defaultRolePermissions(role, allKeys) {
   if (role === "admin") return allKeys.slice();
   if (role === "manager") {
-    return allKeys.filter((k) => !k.startsWith("users.") && k !== "settings.manage" && k !== "bills.create" && k !== "backup.manage");
+    return allKeys.filter((k) => !k.startsWith("users.") && k !== "settings.manage" && k !== "bills.create" && k !== "bills.delete" && k !== "backup.manage");
   }
   // biller
-  return ["dashboard.view", "bills.view", "bills.create", "bills.print", "parties.view", "parties.create", "parties.edit", "inventory.view", "tracking.view", "tracking.update"]
+  return ["dashboard.view", "bills.view", "bills.create", "bills.print", "parties.view", "parties.create", "parties.edit", "parties.payment", "inventory.view", "tracking.view", "tracking.update"]
     .filter((k) => allKeys.includes(k));
 }

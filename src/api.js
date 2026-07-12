@@ -39,6 +39,9 @@ export const api = {
   async createBill(bill) {
     return request("/api/bills", { method: "POST", body: JSON.stringify(bill) });
   },
+  async deleteBill(billId) {
+    return request(`/api/bills/${encodeURIComponent(billId)}`, { method: "DELETE" });
+  },
   async updateRate(productId, rate) {
     return request(`/api/products/${encodeURIComponent(productId)}/rate`, { method: "PATCH", body: JSON.stringify({ rate }) });
   },
@@ -83,6 +86,9 @@ export const api = {
   },
   async updateTracking(billId, patch) {
     return request(`/api/bills/${encodeURIComponent(billId)}/tracking`, { method: "PATCH", body: JSON.stringify(patch) });
+  },
+  async recordPayment(partyId, payment) {
+    return request(`/api/parties/${encodeURIComponent(partyId)}/payments`, { method: "POST", body: JSON.stringify(payment) });
   },
   async importTally(xml) {
     return request("/api/tally/import", { method: "POST", body: JSON.stringify({ xml }) });

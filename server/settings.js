@@ -30,6 +30,9 @@ export const DEFAULT_SETTINGS = {
     // Per-bill-type QR: purchase OFF by default (the mill pays the supplier — no QR needed),
     // sale + truck-sale ON. Overridable in Settings → Invoice content.
     qrTypes: { sale: true, purchase: false, truckSale: true },
+    // Whether the payment QR is baked into the bill IMAGE shared on WhatsApp / saved as PNG.
+    // Independent of printed bills — some owners want a clean picture without the QR. ON by default.
+    shareQr: true,
     logoText: "JM",
   },
   thermal: { width: "80" }, // "58" | "80"

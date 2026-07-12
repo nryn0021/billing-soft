@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { FiMapPin, FiTruck, FiChevronDown, FiChevronRight, FiCheckCircle } from "react-icons/fi";
+import { FiUser, FiTruck, FiChevronDown, FiChevronRight, FiCheckCircle } from "react-icons/fi";
 import { useApp } from "../context/AppContext";
 import { Card, Modal, Toggle, EmptyState, Badge, cx } from "../ui";
 import { BillDetailBody } from "../billing/BillDetailBody";
@@ -22,17 +22,17 @@ export default function TruckTracking() {
   const canUpdate = can("tracking.update");
   const [popup, setPopup] = useState(null);
 
-  // All truck-kind bills, grouped by destination (place of supply).
+  // All truck-kind bills, grouped by the PARTY (the customer the truck is going to).
   const groups = useMemo(() => {
     const trucks = (data.transactions || []).filter((t) => t.kind === "truck");
-    const byDest = new Map();
+    const byParty = new Map();
     for (const t of trucks) {
-      const dest = (t.meta?.placeOfSupply || "").trim() || "Unspecified destination";
-      if (!byDest.has(dest)) byDest.set(dest, []);
-      byDest.get(dest).push(t);
+      const dest = (t.party || "").trim() || "Unknown party";
+      if (!byParty.has(dest)) byParty.set(dest, []);
+      byParty.get(dest).push(t);
     }
-    // Destinations with the most active (non-complete) trucks float to the top.
-    return [...byDest.entries()]
+    // Parties with the most active (non-complete) trucks float to the top.
+    return [...byParty.entries()]
       .map(([dest, list]) => ({
         dest, list,
         active: list.filter((t) => (t.meta?.tracking?.status || "dispatched") !== "complete").length,
@@ -43,7 +43,7 @@ export default function TruckTracking() {
   const totalTrucks = groups.reduce((s, g) => s + g.list.length, 0);
 
   if (!totalTrucks) {
-    return <EmptyState icon={FiTruck} title="No truck bills yet" message="Truck sale bills appear here automatically as dispatched, grouped by destination." />;
+    return <EmptyState icon={FiTruck} title="No truck bills yet" message="Truck sale bills appear here automatically as dispatched, grouped by party." />;
   }
 
   return (
@@ -62,8 +62,8 @@ export default function TruckTracking() {
 
       <Modal open={Boolean(popup)} onClose={() => setPopup(null)} size="lg"
         title={popup ? `Truck ${popup.meta?.vehicleNo || popup.id}` : ""}
-        subtitle={popup ? `${popup.meta?.placeOfSupply || "—"} · Challan ${popup.meta?.challanNo || "—"}` : ""}>
-        {popup && <BillDetailBody tx={popup} />}
+        subtitle={popup ? `${popup.party || "—"} · Challan ${popup.meta?.challanNo || "—"}` : ""}>
+        {popup && <BillDetailBody tx={popup} onDeleted={() => setPopup(null)} />}
       </Modal>
     </div>
   );
@@ -76,7 +76,7 @@ function DestinationGroup({ group, canUpdate, onOpen }) {
     <Card className="overflow-hidden">
       <button onClick={() => setOpen((o) => !o)} className="w-full flex items-center gap-3 px-5 py-3.5 border-b border-line hover:bg-surface-2 transition-colors">
         {open ? <FiChevronDown className="text-muted" /> : <FiChevronRight className="text-muted" />}
-        <FiMapPin className="text-brand" />
+        <FiUser className="text-brand" />
         <span className="font-semibold text-ink">{dest}</span>
         <Badge className="ml-1">{list.length} truck{list.length !== 1 ? "s" : ""}</Badge>
         {active > 0 && <span className="text-xs text-muted">{active} active</span>}
@@ -97,6 +97,8 @@ function TruckRow({ tx, canUpdate, onOpen }) {
   const s = STATE_MAP[status] || STATE_MAP.dispatched;
   const [place, setPlace] = useState(tracking.place || "");
   const [busy, setBusy] = useState(false);
+  const bhara = Number(tx.meta?.bhara || 0);
+  const advance = Number(tx.meta?.advance || 0);
   const toPay = Number(tx.meta?.toPay || 0);
   const showDriverPaid = status === "empty" || status === "complete";
 
@@ -138,6 +140,22 @@ function TruckRow({ tx, canUpdate, onOpen }) {
         )}
       </div>
 
+      {/* Freight (bhada) ledger for this truck: total, advance already paid, and what's still owed
+          to the driver. The "to pay" balance is what shows against the truck owner in Debtors. */}
+      {(bhara > 0 || advance > 0 || toPay > 0) && (
+        <div className="mt-2 ml-11 flex flex-wrap gap-x-4 gap-y-1 text-xs">
+          {bhara > 0 && <span className="text-muted">Total bhada <span className="font-semibold text-ink tnum">{inr.format(bhara)}</span></span>}
+          {advance > 0 && <span className="text-muted">Advance paid <span className="font-semibold text-ink tnum">{inr.format(advance)}</span></span>}
+          {toPay > 0 && (
+            <span className="text-muted">To pay driver{" "}
+              <span className={cx("font-semibold tnum", tracking.driverPaid ? "text-success" : "text-warning")}>
+                {inr.format(toPay)}{tracking.driverPaid ? " · cleared" : ""}
+              </span>
+            </span>
+          )}
+        </div>
+      )}
+
       {tracking.place && status !== "complete" && (
         <p className="text-xs text-muted mt-1.5 ml-11">Last known: {tracking.place} · {tracking.updatedAt ? formatDateTime(tracking.updatedAt) : ""}</p>
       )}
@@ -145,13 +163,22 @@ function TruckRow({ tx, canUpdate, onOpen }) {
       {canUpdate && (
         <div className="mt-3 ml-11 space-y-2.5">
           <div className="flex flex-wrap gap-1.5">
-            {STATES.map((opt) => (
-              <button key={opt.key} disabled={busy} onClick={() => push({ status: opt.key })}
-                className={cx("rounded-lg border px-2.5 py-1 text-xs font-medium transition-colors disabled:opacity-50",
-                  status === opt.key ? opt.cls : "border-line text-ink-2 hover:bg-surface-2")}>
-                {opt.label}
-              </button>
-            ))}
+            {STATES.map((opt) => {
+              const selected = status === opt.key;
+              return (
+                <button key={opt.key} disabled={busy} onClick={() => push({ status: opt.key })}
+                  aria-pressed={selected}
+                  className={cx(
+                    "inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition-all disabled:opacity-50",
+                    selected
+                      ? cx(opt.cls, "ring-2 ring-offset-1 ring-offset-surface shadow-sm scale-[1.03]")
+                      : "border-line text-ink-2 hover:bg-surface-2")}>
+                  <span className={cx("size-2 rounded-full", selected ? opt.dot : "bg-line")} />
+                  {opt.label}
+                  {selected && <FiCheckCircle className="text-[13px]" />}
+                </button>
+              );
+            })}
           </div>
 
           {/* Optional place note — most relevant while on the way; not mandatory. */}

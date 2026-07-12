@@ -17,10 +17,13 @@ export function ReceiptActions({ invoice }) {
     try { await fn(); } catch (e) { toast(e.message || "Something went wrong", "danger"); } finally { setBusy(""); }
   };
 
-  const genReceipt = async () => {
-    const qr = await makeInvoiceQr(settings, invoice, "thermal");
+  // `withQr` lets the shareable image (PNG / WhatsApp) drop the QR when the owner has turned
+  // off Settings → Invoice → "Show QR on shared bill image", while the thermal PRINT keeps it.
+  const genReceipt = async ({ withQr = true } = {}) => {
+    const qr = withQr ? await makeInvoiceQr(settings, invoice, "thermal") : "";
     return renderThermalReceipt(invoice, settings, qr, { widthMm: Number(width), amountInWords });
   };
+  const shareQr = settings.invoice?.shareQr !== false;
 
   // Rich, human-readable WhatsApp caption sent alongside the bill image. Uses WhatsApp
   // markdown (*bold*) and includes the full money breakdown plus date & time.
@@ -83,10 +86,10 @@ export function ReceiptActions({ invoice }) {
         <Button variant="ghost" size="sm" icon={FiPrinter} onClick={() => printInvoice(invoice, "a4")}>A4 print</Button>
         <Button variant="ghost" size="sm" icon={FiFileText} onClick={a4Pdf} disabled={busy === "a4pdf"}>A4 PDF</Button>
         <Button variant="ghost" size="sm" icon={FiPrinter} disabled={!!busy} onClick={withBusy("tp", async () => { const r = await genReceipt(); printReceiptImage(r.dataUrl, r.widthMm); })}>Thermal print</Button>
-        <Button variant="ghost" size="sm" icon={FiImage} disabled={!!busy} onClick={withBusy("png", async () => { const r = await genReceipt(); downloadReceipt(r.dataUrl, billFileName(invoice)); })}>Save PNG</Button>
-        <Button variant="ghost" size="sm" icon={FiDownload} disabled={!!busy} onClick={withBusy("tpdf", async () => { const r = await genReceipt(); await receiptPdf(r.dataUrl, billFileName(invoice), r.widthMm, r.height, r.width); })}>Thermal PDF</Button>
+        <Button variant="ghost" size="sm" icon={FiImage} disabled={!!busy} onClick={withBusy("png", async () => { const r = await genReceipt({ withQr: shareQr }); downloadReceipt(r.dataUrl, billFileName(invoice)); })}>Save PNG</Button>
+        <Button variant="ghost" size="sm" icon={FiDownload} disabled={!!busy} onClick={withBusy("tpdf", async () => { const r = await genReceipt({ withQr: shareQr }); await receiptPdf(r.dataUrl, billFileName(invoice), r.widthMm, r.height, r.width); })}>Thermal PDF</Button>
         <Button variant="primary" size="sm" icon={FiShare2} disabled={!!busy} onClick={withBusy("wa", async () => {
-          const r = await genReceipt();
+          const r = await genReceipt({ withQr: shareQr });
           const name = billFileName(invoice);
           const shared = await shareReceipt(r.dataUrl, name, caption(), settings.notifications?.whatsapp?.ownerNumber);
           toast(shared ? "Bill image ready to send on WhatsApp" : "Bill image downloaded — attach it in the WhatsApp chat that opened", shared ? "success" : "info");
